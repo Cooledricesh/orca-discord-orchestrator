@@ -1,0 +1,7 @@
+orchestrator
+Copyright (c) 2026 pcepyon
+
+This product includes software developed by Anthropic, PBC:
+  plugin/discord-orca/ is a modified copy of the Discord channel plugin
+  for Claude Code ("claude-channel-discord"), licensed under the Apache
+  License, Version 2.0. Modifications are marked with "orca fork" comments.

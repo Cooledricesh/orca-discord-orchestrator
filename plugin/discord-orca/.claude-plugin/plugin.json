@@ -1,0 +1,12 @@
+{
+  "name": "discord-orca",
+  "description": "Discord channel for Claude Code (orca fork). Adds gate env vars: DISCORD_ONLY_CHATS (only these chat ids), DISCORD_TOP_LEVEL_ONLY + DISCORD_THREAD_REGISTRY (drop thread messages whose registry entry is active), DISCORD_PRESENCE (custom status text), DISCORD_IGNORE_OTHER_BOT_MENTIONS (drop messages that mention another bot but not this one).",
+  "version": "0.1.0",
+  "keywords": [
+    "discord",
+    "messaging",
+    "channel",
+    "mcp",
+    "orca"
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "_comment": "routes.json 으로 복사해서 채운다. Discord 채널 snowflake → {name, path}. 채널ID는 Developer Mode > 채널 우클릭 > Copy Channel ID. document 라우트는 ~/orchestrator 에서 작업자를 띄우고 writeDir 아래에만 쓴다. kind=lounge 는 비전(Codex) 라운지.",
+  "routes": {
+    "111111111111111111": { "name": "my-app",   "path": "/Users/you/project/my-app" },
+    "222222222222222222": { "name": "docs",     "path": "/Users/you/project/docs" },
+    "333333333333333333": { "name": "document", "path": "/Users/you/orchestrator", "writeDir": "docs/" },
+    "444444444444444444": { "name": "vision",   "path": "/Users/you/orchestrator", "kind": "lounge", "bot": "비전" }
+  },
+  "generalChannelId": "555555555555555555",
+  "guildId": "666666666666666666",
+  "ownerUserId": "777777777777777777",
+  "bots": {
+    "상담역": "프라이데이",
+    "접수원": "해피",
+    "workers": ["마크1", "마크2", "마크3", "마크4"],
+    "리뷰어": "자비스"
+  },
+  "models": {
+    "상담역": "claude-fable-5-1",
+    "접수원": "claude-sonnet-5",
+    "작업자": "claude-fable-5-1",
+    "작업자Effort": "medium",
+    "리뷰어": { "provider": "codex", "model": "gpt-6-astra", "effort": "xhigh" },
+    "비전":   { "provider": "codex", "model": "", "effort": "", "_comment": "비어 있으면 ~/.codex/config.toml 기본값" }
+  },
+  "stateRoot": "~/.claude/channels",
+  "channelsFlag": "plugin:discord-orca@orca-local",
+  "opsLogChannelId": "888888888888888888",
+  "botDisplay": {
+    "프라이데이": "프라이데이 · 기획", "해피": "해피 · 접수",
+    "마크1": "마크 1", "마크2": "마크 2", "마크3": "마크 3", "마크4": "마크 4",
+    "자비스": "자비스 · 검수", "비전": "비전 · GPT"
+  },
+  "botColors": {
+    "프라이데이": 10980346, "해피": 6333946, "마크1": 16281969, "마크2": 16486972,
+    "마크3": 4906624, "마크4": 6333946, "자비스": 3003583, "비전": 16041834
+  },
+  "emojis": {
+    "ack": "<:ack:999999999999999901>", "done": "<:done:999999999999999902>",
+    "wait": "<:wait:999999999999999903>", "working": "<:working:999999999999999904>"
+  },
+  "review": {
+    "maxConcurrent": 4, "timeoutMin": 20, "historyMaxMessages": 200,
+    "historyMaxChars": 40000, "channelThreadTtlHours": 6, "gcDays": 30
+  }
+}

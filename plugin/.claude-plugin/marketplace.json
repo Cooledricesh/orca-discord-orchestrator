@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "orca-local",
+  "description": "Local marketplace for the orchestrator's forked Discord channel plugin",
+  "owner": {
+    "name": "pcepyon"
+  },
+  "plugins": [
+    {
+      "name": "discord-orca",
+      "description": "Discord channel fork with orca gate env vars (DISCORD_ONLY_CHATS, DISCORD_TOP_LEVEL_ONLY, DISCORD_THREAD_REGISTRY, DISCORD_PRESENCE)",
+      "category": "productivity",
+      "source": "./discord-orca"
+    }
+  ]
+}

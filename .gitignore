@@ -1,0 +1,23 @@
+# 런타임 상태 (토큰·pid·등록부)
+state/
+# 세션 요약 (개인 메모리, 저장소와 무관)
+memory/
+# 로컬 설정
+.claude/settings.local.json
+sessions/*/.claude/settings.local.json
+# 플러그인 의존성
+plugin/discord-orca/node_modules
+plugin/discord-orca/bun.lock
+# 파이썬 캐시
+bin/__pycache__/
+
+# Codex worker dependencies
+codex-worker/node_modules/
+
+# Discord 꾸미기 산출물·로컬 백업
+/output/discord-style-20260909/
+
+# 공개 저장소: 로컬 전용 (원본은 각자 작성)
+routes.json
+runs/
+assets/

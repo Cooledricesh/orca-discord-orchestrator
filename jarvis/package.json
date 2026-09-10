@@ -1,0 +1,19 @@
+{
+  "name": "jarvis",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "자비스 — Codex 기반 Discord 검수 봇 데몬 (orchestrator)",
+  "scripts": {
+    "start": "bun server.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "python3 ~/orchestrator/bin/progress-hook.py", "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "python3 ~/orchestrator/bin/progress-hook.py", "timeout": 5 } ] }
+    ]
+  }
+}
