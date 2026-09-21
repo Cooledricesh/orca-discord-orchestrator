@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { assertPublicAttachment } from './file-policy.ts'
+import { handleModelCommand } from './model-control.ts'
 /**
  * Discord channel for Claude Code.
  *
@@ -857,6 +858,7 @@ async function handleInbound(msg: Message): Promise<void> {
   const result = await gate(msg)
 
   if (result.action === 'drop') return
+  if (result.action === 'deliver' && await handleModelCommand(msg)) return
   if (ACTIVITY_FILE) { try { writeFileSync(ACTIVITY_FILE, `${new Date().toISOString()} ${msg.channelId}\n`) } catch {} }
 
   if (result.action === 'pair') {
