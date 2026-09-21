@@ -4,12 +4,14 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 fg=0; [[ "${1:-}" == "--fg" ]] && fg=1
+role_enabled 리뷰어 || { print -- "자비스: 비활성"; exit 0; }
 export PATH="$HOME/.bun/bin:$PATH"
 command -v bun >/dev/null || die "bun 없음 (~/.bun/bin)"
-command -v codex >/dev/null || die "codex 없음 (~/.bun/bin)"
+command -v "$CODEX_BIN" >/dev/null || die "Codex 실행 파일 없음: $CODEX_BIN"
 bot="$(route_get '["bots"]["리뷰어"]' 2>/dev/null || print -- 자비스)"
 [[ -f "$(bot_env_file "$bot")" ]] || die "봇 env 없음: $(bot_env_file "$bot") — Discord 앱을 만들고 DISCORD_BOT_TOKEN/DISCORD_APP_ID 를 넣을 것"
-[[ -f "$HOME/.codex/auth.json" ]] || die "~/.codex/auth.json 없음 — codex login 먼저"
+[[ -f "$ORCH_CODEX_AUTH_FILE" ]] || die "Codex 인증 파일 없음: $ORCH_CODEX_AUTH_FILE — codex login 또는 codexAuthFile 설정"
+ensure_state
 pidf="$STATE_DIR_ROOT/jarvis.pid"
 if [[ -f "$pidf" ]] && kill -0 "$(cat "$pidf")" 2>/dev/null; then
   print -- "already running pid=$(cat "$pidf")"; exit 0

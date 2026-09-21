@@ -10,6 +10,7 @@ export interface ThreadState {
   cwd: string
   lastMessageId: string | null
   roleVersion: string
+  modelRevision?: string
   createdAt: string
   lastTurnAt: string | null
   turns: number
@@ -48,6 +49,15 @@ export function newState(chatId: string, project: string, cwd: string, roleVersi
 export function markProcessed(s: ThreadState, messageId: string): void {
   if (!s.processed.includes(messageId)) s.processed.push(messageId)
   if (s.processed.length > PROCESSED_CAP) s.processed.splice(0, s.processed.length - PROCESSED_CAP)
+}
+
+/** A model change starts fresh without deleting the previous transcript or dedupe state. */
+export function applyModelRevision(s: ThreadState, revision: string): boolean {
+  if ((s.modelRevision ?? '') === revision) return false
+  s.codexThreadId = null
+  s.lastMessageId = null
+  s.modelRevision = revision
+  return true
 }
 
 export function isProcessed(chatId: string, messageId: string): boolean {

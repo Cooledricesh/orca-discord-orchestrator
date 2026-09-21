@@ -8,13 +8,13 @@
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { basename } from 'path'
 import {
-  loadConfig, loadBotEnv, loadTrustedBots, ensureDirs, PID_FILE, type Config,
+  loadConfig, loadBotEnv, loadTrustedBots, roleEnabled, ensureDirs, PID_FILE, type Config,
 } from './config.ts'
 import { gate, stripSelfMention, RateGuard, type GateInput } from './gate.ts'
 import {
-  readState, writeState, newState, markProcessed, isProcessed, listStates, deleteState, log, type ThreadState,
+  readState, writeState, newState, markProcessed, isProcessed, listStates, deleteState, log, applyModelRevision, type ThreadState,
 } from './state.ts'
-import { resolveTarget, gitBlock, formatHistory, buildPrompt, type HistMsg, type Target } from './context.ts'
+import { resolveTarget, gitBlock, formatHistory, buildPrompt, discordMessageText, type HistMsg, type Target } from './context.ts'
 import { prepareCodexHome, runTurn, recoverFinalMessage, deleteSessionFile, killAllChildren, inflightChildren } from './codex.ts'
 import { Semaphore, PerKeyQueue } from './queue.ts'
 import { buildFinal, ProgressReporter, summarizeProgress, ConsolePoster, DiscordPoster, type Poster } from './post.ts'
@@ -24,6 +24,7 @@ import { buildFinal, ProgressReporter, summarizeProgress, ConsolePoster, Discord
 // ---------------------------------------------------------------------------
 interface Request {
   chatId: string
+  isDirectMessage?: boolean
   parentChannelId: string
   messageId: string
   userText: string
@@ -73,7 +74,7 @@ class Jarvis {
 
   private async handle(req: Request): Promise<void> {
     const { cfg } = this
-    const target: Target = { ...resolveTarget(cfg.routes, req.chatId, req.parentChannelId), ...req.targetOverride }
+    const target: Target = { ...resolveTarget(cfg.routes, req.chatId, req.parentChannelId, req.isDirectMessage), ...req.targetOverride }
     if (req.targetOverride?.cwd) delete target.error
     if (target.error) {
       log(`[${req.chatId}] target error: ${target.error}`)
@@ -82,6 +83,10 @@ class Jarvis {
     }
     let st = readState(req.chatId)
     if (!st) st = newState(req.chatId, target.project, target.cwd, this.roleVersion)
+    const modelRevision = (cfg.routes.models?.['리뷰어'] as { revision?: string } | undefined)?.revision ?? ''
+    if (applyModelRevision(st, modelRevision)) {
+      log(`[${req.chatId}] model configuration changed — new review context (old transcript kept)`)
+    }
     if (st.cwd !== target.cwd) { log(`[${req.chatId}] cwd changed ${st.cwd} → ${target.cwd} (registry/route)`); st.cwd = target.cwd }
     // 채널 최상위 대화는 영구 resume 하지 않는다: 마지막 턴이 TTL 을 넘었으면 새 codex 스레드.
     if (req.chatId === req.parentChannelId && st.codexThreadId && st.lastTurnAt) {
@@ -208,19 +213,22 @@ function installSignalHandlers(): void {
 // Discord 모드
 // ---------------------------------------------------------------------------
 async function runDiscord(cfg: Config, roleVersion: string): Promise<void> {
-  const { Client, GatewayIntentBits, ActivityType } = await import('discord.js')
+  const { Client, GatewayIntentBits, ActivityType, Partials, ChannelType } = await import('discord.js')
   const { token, appId } = loadBotEnv(cfg.envFile)
   claimPid()
   const jarvis = new Jarvis(cfg, roleVersion, appId)
   jarvis.trustedBots = loadTrustedBots(cfg.routes)
   log(`trusted bot authors: ${jarvis.trustedBots.size} (${[...jarvis.trustedBots.values()].join(', ')})`)
-  const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] })
+  const client = new Client({
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent],
+    partials: [Partials.Channel],
+  })
 
   const toHist = (m: any): HistMsg => ({
     id: m.id,
     author: m.member?.displayName ?? m.author?.displayName ?? m.author?.username ?? '?',
     isBot: !!m.author?.bot,
-    content: stripSelfMention(String(m.content ?? ''), appId) + (m.attachments?.size ? ` [첨부 ${m.attachments.size}개]` : ''),
+    content: stripSelfMention(discordMessageText(m), appId),
     createdAt: new Date(m.createdTimestamp ?? Date.now()).toISOString(),
   })
 
@@ -291,6 +299,7 @@ async function runDiscord(cfg: Config, roleVersion: string): Promise<void> {
       authorIsBot: msg.author.bot,
       authorIsTrustedBot: msg.author.bot && jarvis.trustedBots.has(msg.author.id),
       guildId: msg.guildId,
+      isDirectMessage: msg.channel.type === ChannelType.DM,
       channelId: msg.channelId,
       parentId: msg.channel.isThread() ? msg.channel.parentId : null,
       mentionedUserIds: [...msg.mentions.users.keys()],
@@ -299,10 +308,11 @@ async function runDiscord(cfg: Config, roleVersion: string): Promise<void> {
     if (g.action === 'drop') { if (g.reason === 'bot rate limit') log(`[${msg.channelId}] dropped bot brief from ${jarvis.trustedBots.get(msg.author.id)} — rate limit`); return }
     msg.react(cfg.ackEmoji).catch(() => msg.react('👀').catch(() => {}))
     const requesterBot = gi.authorIsTrustedBot ? jarvis.botDisplay(jarvis.trustedBots.get(msg.author.id) ?? 'bot') : undefined
-    log(`[${g.chatId}] accepted msg ${msg.id} (${msg.channel.isThread() ? 'thread' : 'channel'} of ${g.parentChannelId}${requesterBot ? ', brief from ' + requesterBot : ''})`)
+    log(`[${g.chatId}] accepted msg ${msg.id} (${g.isDirectMessage ? 'DM' : msg.channel.isThread() ? 'thread' : 'channel'} of ${g.parentChannelId}${requesterBot ? ', brief from ' + requesterBot : ''})`)
     const poster = new DiscordPoster(msg.channel as any)
     jarvis.enqueue({
       chatId: g.chatId, parentChannelId: g.parentChannelId, messageId: msg.id,
+      isDirectMessage: g.isDirectMessage,
       userText: stripSelfMention(msg.content, appId),
       fetchHistory: fetchHistory(msg.channel, msg.id),
       poster, requesterBot,
@@ -354,7 +364,8 @@ async function runDry(cfg: Config, roleVersion: string, args: string[]): Promise
       authorId: f.message?.authorId ?? r.ownerUserId,
       authorIsBot: f.message?.authorIsBot ?? false,
       authorIsTrustedBot: !!f.message?.authorIsBot && jarvis.trustedBots.has(f.message?.authorId ?? ''),
-      guildId: f.message?.guildId ?? r.guildId,
+      guildId: f.message?.guildId === null ? null : f.message?.guildId ?? r.guildId,
+      isDirectMessage: f.message?.isDirectMessage ?? false,
       channelId: chatId,
       parentId: f.message?.parentId ?? r.generalChannelId,
       mentionedUserIds: f.message?.mentionedUserIds ?? [selfAppId],
@@ -366,6 +377,7 @@ async function runDry(cfg: Config, roleVersion: string, args: string[]): Promise
     const override: Partial<Target> | undefined = cwd ? { cwd, project: f.project ?? basename(cwd), route: null, registry: null } : undefined
     return jarvis.enqueue({
       chatId: g.chatId, parentChannelId: g.parentChannelId, messageId: gi.messageId,
+      isDirectMessage: g.isDirectMessage,
       userText: stripSelfMention(f.message?.content ?? '', selfAppId),
       fetchHistory: async () => f.history ?? [],
       poster, targetOverride: override,
@@ -378,8 +390,11 @@ async function runDry(cfg: Config, roleVersion: string, args: string[]): Promise
 // ---------------------------------------------------------------------------
 async function main() {
   const args = process.argv.slice(2)
-  ensureDirs()
   const cfg = loadConfig()
+  if (!roleEnabled(cfg.routes, '리뷰어') && !['cleanup', 'gc'].includes(args[0] ?? '')) {
+    process.stdout.write('자비스: 비활성\n'); return
+  }
+  ensureDirs()
   if (args[0] === 'cleanup') {
     const roleVersion = 'n/a'; const j = new Jarvis(cfg, roleVersion, 'cli')
     const which = args[1]
@@ -395,7 +410,7 @@ async function main() {
     process.stdout.write(`gc: ${removed.length} thread(s) older than ${days}d removed${removed.length ? ' — ' + removed.join(', ') : ''}\n`)
     return
   }
-  if (args[0] === 'reauth') { prepareCodexHome(cfg, { reauth: true }); process.stdout.write('auth.json re-copied from ~/.codex\n'); return }
+  if (args[0] === 'reauth') { prepareCodexHome(cfg, { reauth: true }); process.stdout.write('auth.json re-copied from configured source\n'); return }
   const roleVersion = prepareCodexHome(cfg)
   installSignalHandlers()
   if (args.includes('--dry-run')) { await runDry(cfg, roleVersion, args); return }

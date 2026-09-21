@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { gate, stripSelfMention, RateGuard, type GateInput, type GateCfg } from './gate.ts'
-import { formatHistory, buildPrompt, resolveTarget, routeReadPath } from './context.ts'
+import { formatHistory, buildPrompt, resolveTarget, routeReadPath, discordMessageText } from './context.ts'
 import { GENERAL_CWD, type Routes } from './config.ts'
 import { extractSummary } from './post.ts'
 import { PerKeyQueue, Semaphore } from './queue.ts'
@@ -53,6 +53,28 @@ describe('gate: trusted bots', () => {
   })
 })
 
+describe('gate: owner DM', () => {
+  const dm = { ...base, guildId: null, isDirectMessage: true, channelId: 'dm-owner', parentId: null, mentionedUserIds: [] }
+  test('owner DM needs neither route nor mention', () => {
+    expect(gate(dm, cfg)).toEqual({ action: 'deliver', chatId: 'dm-owner', parentChannelId: 'dm-owner', isDirectMessage: true })
+  })
+  test('non-owner DM rejected even with mention', () => {
+    expect(gate({ ...dm, authorId: 'stranger', mentionedUserIds: [SELF] }, cfg).action).toBe('drop')
+  })
+  test('trusted bot DM rejected', () => {
+    expect(gate({ ...dm, authorId: 'friday', authorIsBot: true, authorIsTrustedBot: true }, cfg)).toEqual({ action: 'drop', reason: 'DM owner only' })
+  })
+  test('group DM / unidentified guild-less message rejected', () => {
+    expect(gate({ ...dm, isDirectMessage: false }, cfg).action).toBe('drop')
+  })
+  test('DM flag does not bypass foreign guild restriction', () => {
+    expect(gate({ ...dm, guildId: 'other' }, cfg).action).toBe('drop')
+  })
+  test('processed owner DM is not replayed', () => {
+    expect(gate(dm, { ...cfg, isProcessed: () => true })).toEqual({ action: 'drop', reason: 'already processed' })
+  })
+})
+
 describe('buildPrompt requester line', () => {
   test('bot requester adds 요청자 line; owner does not', () => {
     const tgt = { project: 'p', cwd: '/x', route: null, registry: null }
@@ -69,6 +91,14 @@ describe('stripSelfMention', () => {
 })
 
 describe('context', () => {
+  test('review history includes result embed title, body and fields', () => {
+    expect(discordMessageText({ content: '<@owner>', embeds: [{ title: '완료', description: '세 줄 요약', fields: [{ name: '수정 파일', value: '없음' }] }], attachments: { size: 1 } }))
+      .toBe('<@owner>\n[카드]\n완료\n세 줄 요약\n수정 파일: 없음\n[첨부 1개]')
+  })
+  test('plain and empty messages work without embeds', () => {
+    expect(discordMessageText({ content: '검수해 줘' })).toBe('검수해 줘')
+    expect(discordMessageText({ embeds: [{}] })).toBe('')
+  })
   test('history caps by chars keeping the newest', () => {
     const msgs = Array.from({ length: 50 }, (_, i) => ({ id: String(i), author: 'u', isBot: false, content: `msg-${i} ` + 'x'.repeat(50), createdAt: '2026-09-08T00:00:00.000Z' }))
     const t = formatHistory(msgs, 500)
@@ -86,6 +116,15 @@ describe('context', () => {
 
 describe('resolveTarget', () => {
   const routes = { routes: { 'ch-proj': { name: 'p', path: '/nonexistent/p' } }, generalChannelId: 'ch-general', guildId: 'g', ownerUserId: 'o', bots: {} } as unknown as Routes
+  test('DM uses neutral cwd, no implicit project and private DM instructions', () => {
+    const t = resolveTarget(routes, 'dm-owner', 'dm-owner', true)
+    expect(t).toEqual({ project: 'dm', cwd: GENERAL_CWD, route: null, registry: null, general: true, directMessage: true })
+    const prompt = buildPrompt('안녕', { target: t, history: '', git: '', isFirstTurn: true, channelLevel: true, knownRoutes: Object.values(routes.routes) })
+    expect(prompt).toContain('비공개 DM')
+    expect(prompt).toContain('멘션 없이')
+    expect(prompt).not.toContain('채널 최상위')
+    expect(prompt).not.toContain('## git')
+  })
   test('#프라이데이 thread → general target, empty cwd dir, no error', () => {
     const t = resolveTarget(routes, 'thread-g', 'ch-general')
     expect(t.general).toBe(true); expect(t.project).toBe('general'); expect(t.cwd).toBe(GENERAL_CWD); expect(t.error).toBeUndefined()

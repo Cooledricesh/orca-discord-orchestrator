@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url'
 
 export const JARVIS_DIR = dirname(fileURLToPath(import.meta.url))
 export const ORCH_ROOT = process.env.ORCH_ROOT ?? resolve(JARVIS_DIR, '..')
-export const STATE_ROOT = join(ORCH_ROOT, 'state')
+export const STATE_ROOT = process.env.STATE_DIR_ROOT ?? join(ORCH_ROOT, 'state')
 export const JARVIS_STATE = join(STATE_ROOT, 'jarvis')
 export const THREAD_STATE_DIR = join(JARVIS_STATE, 'threads')
 export const CODEX_HOME = join(JARVIS_STATE, 'codex-home')
@@ -17,8 +17,8 @@ export const LOG_FILE = join(STATE_ROOT, 'log', 'jarvis.log')
 export const REGISTRY_DIR = join(STATE_ROOT, 'threads')
 export const ROLE_FILE = join(ORCH_ROOT, 'roles', '자비스.md')
 export const RUNS_DIR = join(ORCH_ROOT, 'runs')
-export const ROUTES_FILE = join(ORCH_ROOT, 'routes.json')
-export const USER_CODEX_AUTH = join(homedir(), '.codex', 'auth.json')
+export const ROUTES_FILE = process.env.ROUTES_FILE ?? join(ORCH_ROOT, 'routes.json')
+export const USER_CODEX_AUTH = join(process.env.CODEX_HOME ?? join(homedir(), '.codex'), 'auth.json')
 
 export interface Route { name: string; path: string; writeDir?: string; kind?: 'lounge'; bot?: string }
 export interface ReviewCfg { maxConcurrent: number; timeoutMin: number; historyMaxMessages: number; historyMaxChars: number; channelThreadTtlHours: number; gcDays: number }
@@ -34,6 +34,23 @@ export interface Routes {
   emojis?: Record<string, string>
   review?: Partial<ReviewCfg>
   stateRoot?: string
+  enabled?: Partial<Record<'상담역' | '접수원' | '작업자' | '리뷰어' | '비전', boolean>>
+  codexAuthFile?: string
+}
+
+export function roleEnabled(routes: Routes, role: keyof NonNullable<Routes['enabled']>): boolean {
+  if (routes.enabled?.[role] !== undefined) return routes.enabled[role] === true
+  if (role === '비전') return Object.values(routes.routes).some(r => r.kind === 'lounge')
+  const bot = routes.bots[role === '작업자' ? 'workers' : role]
+  return Array.isArray(bot) ? bot.length > 0 : !!bot
+}
+
+export function botsDirectory(routes: Routes): string {
+  return process.env.BOTS_DIR ?? join((routes.stateRoot ?? '~/.claude/channels').replace(/^~/, homedir()), 'bots')
+}
+
+export function authSource(routes: Routes): string {
+  return (process.env.ORCH_CODEX_AUTH_FILE || routes.codexAuthFile || USER_CODEX_AUTH).replace(/^~/, homedir())
 }
 
 export interface Config {
@@ -53,11 +70,10 @@ export function loadRoutes(file = ROUTES_FILE): Routes {
 export function loadConfig(): Config {
   const routes = loadRoutes()
   const botName = (routes.bots['리뷰어'] as string | undefined) ?? '자비스'
-  const stateRoot = (routes.stateRoot ?? '~/.claude/channels').replace(/^~/, homedir())
-  const envFile = join(stateRoot, 'bots', `${botName}.env`)
+  const envFile = join(botsDirectory(routes), `${botName}.env`)
   const r = routes.review ?? {}
   const review: ReviewCfg = {
-    maxConcurrent: r.maxConcurrent ?? 4,
+    maxConcurrent: r.maxConcurrent ?? 1,
     timeoutMin: r.timeoutMin ?? 20,
     historyMaxMessages: r.historyMaxMessages ?? 200,
     historyMaxChars: r.historyMaxChars ?? 40000,
@@ -70,8 +86,8 @@ export function loadConfig(): Config {
     botName,
     envFile,
     review,
-    model: m.model ?? 'gpt-6-astra',
-    effort: m.effort ?? 'xhigh',
+    model: m.model ?? '',
+    effort: m.effort ?? '',
     ackEmoji: routes.emojis?.ack ?? '👀',
   }
 }
@@ -90,10 +106,10 @@ export function loadBotEnv(file: string): { token: string; appId: string } {
 }
 
 /** 신뢰 봇(프라이데이 + 마크1..4)의 DISCORD_APP_ID 만 읽는다 (토큰 줄은 읽지 않는다). 반환: appId → 봇 이름 */
-export function loadTrustedBots(routes: Routes, botsDir = join((routes.stateRoot ?? '~/.claude/channels').replace(/^~/, homedir()), 'bots')): Map<string, string> {
+export function loadTrustedBots(routes: Routes, botsDir = botsDirectory(routes)): Map<string, string> {
   const names: string[] = []
-  const c = routes.bots['상담역']; if (typeof c === 'string') names.push(c)
-  const w = routes.bots['workers']; if (Array.isArray(w)) names.push(...w)
+  const c = routes.bots['상담역']; if (roleEnabled(routes, '상담역') && typeof c === 'string') names.push(c)
+  const w = routes.bots['workers']; if (roleEnabled(routes, '작업자') && Array.isArray(w)) names.push(...w)
   const out = new Map<string, string>()
   for (const n of new Set(names)) {
     try {

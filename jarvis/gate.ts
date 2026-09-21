@@ -6,6 +6,8 @@ export interface GateInput {
   /** 우리 봇(프라이데이·마크) 이면 true — 소유자 대신 브리프를 보낼 수 있다 */
   authorIsTrustedBot?: boolean
   guildId: string | null
+  /** Discord ChannelType.DM만 true (그룹 DM 제외). */
+  isDirectMessage?: boolean
   /** 메시지가 올라온 채널 (스레드면 스레드 id) */
   channelId: string
   /** 스레드면 부모 채널 id, 아니면 null */
@@ -26,13 +28,18 @@ export interface GateCfg {
   rateGuard?: RateGuard
 }
 
-export type GateResult = { action: 'deliver'; chatId: string; parentChannelId: string } | { action: 'drop'; reason: string }
+export type GateResult = { action: 'deliver'; chatId: string; parentChannelId: string; isDirectMessage?: boolean } | { action: 'drop'; reason: string }
 
 export function gate(m: GateInput, cfg: GateCfg): GateResult {
   const isOwner = m.authorId === cfg.ownerUserId && !m.authorIsBot
   const isTrustedBot = m.authorIsBot && !!m.authorIsTrustedBot
   if (m.authorIsBot && !isTrustedBot) return { action: 'drop', reason: 'untrusted bot author' }
   if (!isOwner && !isTrustedBot) return { action: 'drop', reason: 'not owner' }
+  if (m.guildId === null && m.isDirectMessage) {
+    if (!isOwner) return { action: 'drop', reason: 'DM owner only' }
+    if (cfg.isProcessed(m.channelId, m.messageId)) return { action: 'drop', reason: 'already processed' }
+    return { action: 'deliver', chatId: m.channelId, parentChannelId: m.channelId, isDirectMessage: true }
+  }
   if (m.guildId !== cfg.guildId) return { action: 'drop', reason: 'other guild' }
   const parent = m.parentId ?? m.channelId
   if (!cfg.allowedChannelIds.has(parent)) return { action: 'drop', reason: 'channel not routed' }

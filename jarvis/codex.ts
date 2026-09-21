@@ -3,7 +3,7 @@
 import { copyFileSync, existsSync, readFileSync, writeFileSync, chmodSync, readdirSync, statSync, rmSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { createHash } from 'crypto'
-import { CODEX_HOME, USER_CODEX_AUTH, ROLE_FILE, type Config } from './config.ts'
+import { CODEX_HOME, authSource, ROLE_FILE, type Config } from './config.ts'
 import { log } from './state.ts'
 
 /** config.toml + auth.json 준비. 반환값은 roleVersion (역할 지침 sha256 앞 12자). */
@@ -14,22 +14,23 @@ export function prepareCodexHome(cfg: Config, opts: { reauth?: boolean } = {}): 
   const roleVersion = createHash('sha256').update(role).digest('hex').slice(0, 12)
   const toml = [
     `# 자동 생성 (jarvis/codex.ts). 직접 고치지 말 것 — roles/자비스.md 와 routes.json 을 고친다.`,
-    `model = ${JSON.stringify(cfg.model)}`,
-    `model_reasoning_effort = ${JSON.stringify(cfg.effort)}`,
+    ...(cfg.model ? [`model = ${JSON.stringify(cfg.model)}`] : []),
+    ...(cfg.effort ? [`model_reasoning_effort = ${JSON.stringify(cfg.effort)}`] : []),
     `sandbox_mode = "read-only"`,
     `approval_policy = "never"`,
     `developer_instructions = ${JSON.stringify(role)}`,
     ``,
   ].join('\n')
   writeFileSync(join(CODEX_HOME, 'config.toml'), toml)
-  if (!existsSync(USER_CODEX_AUTH)) throw new Error(`~/.codex/auth.json 없음 — 먼저 codex login 을 해야 한다`)
+  const source = authSource(cfg.routes)
+  if (!existsSync(source)) throw new Error(`Codex 인증 파일 없음: ${source} — codex login 또는 codexAuthFile 설정`)
   // auth.json 은 없을 때만 복사한다. codex 가 OAuth 토큰을 갱신해 CODEX_HOME/auth.json 에 되쓰므로
   // 매번 덮어쓰면 오래된 refresh token 이 들어갈 수 있다. 강제 복사는 `server.ts reauth`.
   const dst = join(CODEX_HOME, 'auth.json')
   if (opts.reauth || !existsSync(dst)) {
-    copyFileSync(USER_CODEX_AUTH, dst)
+    copyFileSync(source, dst)
     chmodSync(dst, 0o600)
-    log(`auth.json ${opts.reauth ? 're-copied (reauth)' : 'copied'} from ~/.codex`)
+    log(`auth.json ${opts.reauth ? 're-copied (reauth)' : 'copied'} from configured auth source`)
   }
   return roleVersion
 }
@@ -81,8 +82,8 @@ export function inflightChildren(): number { return children.size }
 /** 한 턴 실행. 프롬프트는 stdin 으로 넘긴다 (인자 길이 제한/인용 문제 회피). */
 export async function runTurn(o: TurnOpts): Promise<TurnResult> {
   const base = o.resumeId
-    ? ['codex', 'exec', 'resume', o.resumeId, '--json', '--skip-git-repo-check', '-']
-    : ['codex', 'exec', '--json', '--skip-git-repo-check', '-C', o.cwd, '-']
+    ? [process.env.CODEX_BIN ?? 'codex', 'exec', 'resume', o.resumeId, '--json', '--skip-git-repo-check', '-']
+    : [process.env.CODEX_BIN ?? 'codex', 'exec', '--json', '--skip-git-repo-check', '-C', o.cwd, '-']
   const res: TurnResult = { threadId: o.resumeId, finalText: '', usage: null, error: null, aborted: false }
   let proc: Bun.Subprocess<'pipe', 'pipe', 'pipe'>
   try {

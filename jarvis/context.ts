@@ -21,11 +21,16 @@ export interface Target {
   registry: RegistryEntry | null
   /** #프라이데이 스레드: 코드 대상 없음 (cwd 는 빈 디렉터리) */
   general?: boolean
+  directMessage?: boolean
   error?: string
 }
 
 /** 스레드(chatId)와 부모 채널로 프로젝트/작업 디렉터리를 정한다. */
-export function resolveTarget(routes: Routes, chatId: string, parentChannelId: string): Target {
+export function resolveTarget(routes: Routes, chatId: string, parentChannelId: string, directMessage = false): Target {
+  if (directMessage) {
+    mkdirSync(GENERAL_CWD, { recursive: true, mode: 0o700 })
+    return { project: 'dm', cwd: GENERAL_CWD, route: null, registry: null, general: true, directMessage: true }
+  }
   const route = routes.routes[parentChannelId] ?? null
   const registry = chatId !== parentChannelId ? readRegistry(chatId) : null
   if (!registry && !route && parentChannelId === routes.generalChannelId) {
@@ -76,6 +81,21 @@ export async function gitBlock(cwd: string, baseRef?: string): Promise<string> {
 
 export interface HistMsg { id: string; author: string; isBot: boolean; content: string; createdAt: string }
 
+/** 메시지 본문뿐 아니라 마크의 결과 카드도 검수 컨텍스트에 보존한다. */
+export function discordMessageText(message: {
+  content?: string | null
+  embeds?: ReadonlyArray<{ title?: string | null; description?: string | null; fields?: ReadonlyArray<{ name: string; value: string }> }>
+  attachments?: { size: number }
+}): string {
+  const parts = [message.content ?? '']
+  for (const embed of message.embeds ?? []) {
+    const text = [embed.title, embed.description, ...(embed.fields ?? []).map(f => `${f.name}: ${f.value}`)].filter(Boolean).join('\n')
+    if (text) parts.push(`[카드]\n${text}`)
+  }
+  if (message.attachments?.size) parts.push(`[첨부 ${message.attachments.size}개]`)
+  return parts.filter(Boolean).join('\n')
+}
+
 /** Discord 이력 → 텍스트 (오래된 것 먼저, 문자 수 제한은 뒤쪽=최신을 우선 보존). */
 export function formatHistory(msgs: HistMsg[], maxChars: number): string {
   const lines = msgs.map(m => {
@@ -110,7 +130,9 @@ export function buildPrompt(userText: string, c: ContextParts): string {
   const { target } = c
   const head: string[] = []
   if (target.general) {
-    head.push('코드 대상 없음 — #프라이데이 기획/논의 스레드. 대화 내용 자체를 검토·검증·second opinion 한다.')
+    head.push(target.directMessage
+      ? '소유자와의 비공개 DM. 멘션 없이 질문에 답한다. 대상 프로젝트가 불분명하면 물어보고, DM 내용을 서버 채널에 자동으로 공개하지 않는다.'
+      : '코드 대상 없음 — #프라이데이 기획/논의 스레드. 대화 내용 자체를 검토·검증·second opinion 한다.')
     head.push('알려진 프로젝트 (대화가 특정 프로젝트를 다루면 그 경로를 직접 읽어도 된다, 읽기 전용):')
     for (const r of c.knownRoutes ?? []) head.push(`- ${r.name}: ${routeReadPath(r)}`)
   } else {
@@ -122,7 +144,7 @@ export function buildPrompt(userText: string, c: ContextParts): string {
     head.push(`작업자 등록부: bot=${r.bot ?? '?'} title=${r.taskTitle ?? '?'} status=${r.status ?? '?'} worktree=${r.worktreeMode ?? '?'}${r.projectPath && r.projectPath !== r.path ? ` (원본 ${r.projectPath})` : ''}${r.baseRef ? ` baseRef=${r.baseRef.slice(0, 12)}` : ''}`)
   }
   if (target.route?.writeDir) head.push(`이 프로젝트의 쓰기 허용 범위는 ${target.route.writeDir} 아래뿐이다.`)
-  if (c.channelLevel) head.push(`이 요청은 채널 최상위(스레드 아님)에서 왔다. 대상이 불분명하면 범위를 물어라.`)
+  if (c.channelLevel && !target.directMessage) head.push(`이 요청은 채널 최상위(스레드 아님)에서 왔다. 대상이 불분명하면 범위를 물어라.`)
 
   const ctxTitle = c.isFirstTurn ? '## 컨텍스트 (Discord 스레드 이력)' : '## 컨텍스트 갱신 (이전 턴 이후 새 메시지)'
   const gitTitle = c.isFirstTurn ? '## git' : '## git (현재)'
