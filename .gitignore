@@ -9,7 +9,7 @@ sessions/*/.claude/settings.local.json
 plugin/discord-orca/node_modules
 plugin/discord-orca/bun.lock
 # 파이썬 캐시
-bin/__pycache__/
+__pycache__/
 
 # Codex worker dependencies
 codex-worker/node_modules/
