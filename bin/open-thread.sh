@@ -20,4 +20,6 @@ fi
 name="$(python3 -c 'import sys;s=" ".join(sys.argv[1].split());print(s[:40] or "작업")' "$name")"
 body="$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1],"auto_archive_duration":1440},ensure_ascii=False))' "$name")"
 out="$(discord_api "$bot" POST "/channels/$channel/messages/$msg/threads" "$body")" || die "스레드 생성 실패: $out"
-print -r -- "$out" | id_of
+thread="$(print -r -- "$out" | id_of)"
+discord_join_reviewer "$thread"
+print -r -- "$thread"

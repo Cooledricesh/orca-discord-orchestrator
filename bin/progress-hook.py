@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Claude 봇(마크·프라이데이·접수원) 진행 표시 훅. Claude Code hooks (PreToolUse / Stop) 가 stdin 으로 JSON 을 준다.
+"""Claude 봇 진행 표시·오류 알림 훅 (PreToolUse / Stop / StopFailure).
 
 - PreToolUse: 대상 chat 에 `⏳ N · <도구> <대상>` 진행 메시지를 올리고(턴의 첫 도구 호출), 이후는 5초 스로틀로 edit.
   첫 호출 때 typing 유지 루프(8초마다 typing, 턴이 끝나면 종료)를 분리 프로세스로 띄운다.
 - Stop: 진행 메시지를 삭제한다 (결과는 모델이 별도 reply 로 올리므로 겹치지 않게). 루프는 상태 파일이 사라지면 멈춘다.
+- StopFailure: 실패 상태를 기록하고 Discord에 알린 뒤 진행 표시를 종료한다. Stop에서 실패 상태를 해제한다.
 모델 컨텍스트에는 아무것도 돌려주지 않는다 (stdout 없음, exit 0). 실패는 전부 무시한다.
 대상 chat: 마크는 ORCA_THREAD_ID, 상시 세션(ORCA_ROLE)은 플러그인이 DISCORD_ACTIVITY_FILE 에 적는 `<ISO> <chatId>` 의 chatId.
 토큰은 DISCORD_STATE_DIR/.env. 턴 경계는 DISCORD_ACTIVITY_FILE 의 내용으로 판정한다.
 상태: state/threads/<thread>.progress.json 또는 state/leads/<역할>.progress.json (lock: .progress.lock)
 """
 import fcntl, json, os, sys, time, urllib.request
+import failure_hook
 
 THROTTLE_S = 5
 MAX_LEN = 120
@@ -22,15 +24,16 @@ TYPING_MAX_S = 3 * 3600
 
 def main() -> None:
     sd = os.environ.get("DISCORD_STATE_DIR")
-    root = os.environ.get("ORCH_ROOT") or os.path.expanduser("~/orchestrator")
+    root = os.environ.get("ORCH_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+    state = os.environ.get("STATE_DIR_ROOT") or os.path.join(root, "state")
     thread, role = os.environ.get("ORCA_THREAD_ID"), os.environ.get("ORCA_ROLE")
     if thread:
-        base, chat = os.path.join(root, "state", "threads", thread), thread
+        base, chat = os.path.join(state, "threads", thread), thread
     elif role:
-        base, chat = os.path.join(root, "state", "leads", role), activity_chat()
+        base, chat = os.path.join(state, "leads", role), activity_chat()
     else:
         return
-    if not sd or not chat:
+    if not sd:
         return
     try:
         ev = json.load(sys.stdin)
@@ -38,13 +41,16 @@ def main() -> None:
         return
     kind = ev.get("hook_event_name")
     if kind == "PreToolUse":
+        if not chat:
+            return
         text = describe(ev)
         if not text:
             return
-    elif kind == "Stop":
+    elif kind in ("Stop", "StopFailure"):
         text = None
     else:
         return
+    sequence, pid = time.time_ns(), failure_hook.read_pid(base)
     # 훅은 즉시 반환. 실제 REST 는 분리된 자식이 한다 (모델을 막지 않는다).
     if os.fork():
         return
@@ -52,6 +58,10 @@ def main() -> None:
     devnull = os.open(os.devnull, os.O_RDWR)
     for fd in (0, 1, 2):
         os.dup2(devnull, fd)
+    try:
+        failure_hook.handle(base, chat, sd, ev, sequence, pid, api, read_token)
+    except Exception:
+        pass
     try:
         work(base, chat, sd, kind, text)
     except Exception:
@@ -92,12 +102,13 @@ def work(base: str, chat: str, sd: str, kind: str, text: str | None) -> None:
         fcntl.flock(lk, fcntl.LOCK_EX)
         st = {}
         try:
-            st = json.load(open(state_f))
+            with open(state_f) as stream:
+                st = json.load(stream)
         except Exception:
             pass
-        if kind == "Stop":
+        if kind in ("Stop", "StopFailure"):
             if st.get("messageId"):
-                api(token, "DELETE", f"/channels/{chat}/messages/{st['messageId']}")
+                api(token, "DELETE", f"/channels/{st.get('chat') or chat}/messages/{st['messageId']}")
             try:
                 os.remove(state_f)
             except FileNotFoundError:

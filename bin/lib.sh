@@ -2,19 +2,23 @@
 # 공용 헬퍼. 각 스크립트에서 `source "$(dirname "$0")/lib.sh"` 로 불러온다.
 # 토큰은 절대 stdout/stderr 에 출력하지 않는다.
 set -euo pipefail
-export PATH="$HOME/.bun/bin:$PATH"   # launchd 에는 bun/codex 경로가 없다
-
-ORCH_ROOT="${ORCH_ROOT:-$HOME/orchestrator}"
-ROUTES_FILE="${ROUTES_FILE:-$ORCH_ROOT/routes.json}"
-STATE_DIR_ROOT="${STATE_DIR_ROOT:-$ORCH_ROOT/state}"
+umask 077
+export PATH="$HOME/.local/bin:$HOME/.bun/bin:$PATH"
+# %x 는 이 source 파일. cwd 또는 설치 위치에 관계없이 루트를 찾는다.
+ORCH_LIB_ROOT="${${(%):-%x}:A:h:h}"
+config_env="$(python3 "$ORCH_LIB_ROOT/bin/config.py" shell)" || exit 1
+eval "$config_env"  # config.py 가 shlex.quote 로 만든 export 문만 평가한다.
+unset config_env
+export ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-orca}}"
+export CODEX_BIN="${CODEX_BIN:-codex}"
+export CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 THREADS_DIR="$STATE_DIR_ROOT/threads"
 POOL_FILE="$STATE_DIR_ROOT/pool.json"
 POOL_LOCK="$STATE_DIR_ROOT/pool.lock"
-BOTS_DIR="${BOTS_DIR:-$HOME/.claude/channels/bots}"
 DISCORD_API="https://discord.com/api/v10"
 PLUGIN_ID="discord-orca@orca-local"
 
-mkdir -p "$THREADS_DIR" "$STATE_DIR_ROOT/log"
+ensure_state() { mkdir -p "$THREADS_DIR" "$STATE_DIR_ROOT/log"; }
 
 log()  { print -u2 -- "[$(basename "${ZSH_ARGZERO:-$0}")] $*"; }
 warn() { log "WARN: $*"; }
@@ -24,40 +28,46 @@ now()  { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # --- routes.json ---------------------------------------------------------
 # route_get <jsonpath 표현식>  예: route_get '["guildId"]'  /  route_get '["routes"]["123"]["path"]'
 route_get() {
-  python3 - "$ROUTES_FILE" "$1" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-try:
-    v = eval("d" + sys.argv[2])
-except (KeyError, IndexError, TypeError):
-    sys.exit(1)
-print(v if not isinstance(v, (dict, list)) else json.dumps(v, ensure_ascii=False))
-PY
+  python3 "$ORCH_LIB_ROOT/bin/config.py" get "$1"
 }
+role_enabled() { python3 "$ORCH_LIB_ROOT/bin/config.py" enabled "$1"; }
 guild_id()      { route_get '["guildId"]'; }
 owner_id()      { route_get '["ownerUserId"]'; }
 channels_flag() { route_get '["channelsFlag"]'; }
-state_root()    { local r; r="$(route_get '["stateRoot"]')"; print -- "${r/#\~/$HOME}"; }
+state_root()    { local r; r="$(route_get '["stateRoot"]' 2>/dev/null || print -- '~/.claude/channels')"; print -- "${r/#\~/$HOME}"; }
 # 프로젝트 채널 목록 (한 줄에 하나). kind=lounge (비전) 는 제외.
 project_channels() { python3 -c 'import json,sys;[print(k) for k,v in json.load(open(sys.argv[1]))["routes"].items() if v.get("kind") != "lounge"]' "$ROUTES_FILE"; }
-lounge_channel()  { python3 -c 'import json,sys;[print(k) for k,v in json.load(open(sys.argv[1]))["routes"].items() if v.get("kind") == "lounge"]' "$ROUTES_FILE" | head -1; }
+lounge_channel()  { role_enabled 비전 || return 0; python3 -c 'import json,sys;print(next((k for k,v in json.load(open(sys.argv[1]))["routes"].items() if v.get("kind") == "lounge"),""))' "$ROUTES_FILE"; }
 project_name_of() { route_get "[\"routes\"][\"$1\"][\"name\"]"; }
 project_path_of() { route_get "[\"routes\"][\"$1\"][\"path\"]"; }
-worker_bots()   { python3 -c 'import json,sys;[print(b) for b in json.load(open(sys.argv[1]))["bots"]["workers"]]' "$ROUTES_FILE"; }
+worker_bots()   { role_enabled 작업자 || return 0; python3 -c 'import json,sys;[print(b) for b in json.load(open(sys.argv[1]))["bots"]["workers"]]' "$ROUTES_FILE"; }
 
 # --- 봇 토큰 -------------------------------------------------------------
 bot_env_file() { print -- "$BOTS_DIR/$1.env"; }
 # bot_token <봇이름>  → 토큰 값을 stdout 으로 (변수 캡처 용도로만 쓸 것)
 bot_token() {
   local f; f="$(bot_env_file "$1")"
-  [[ -f "$f" ]] || die "봇 env 없음: $f"
+  [[ -f "$f" ]] || { warn "봇 env 없음: $f"; return 1; }
   grep -E '^DISCORD_BOT_TOKEN=' "$f" | head -1 | cut -d= -f2- | tr -d '"\r'
 }
 # bot_app_id <봇이름>  → DISCORD_APP_ID (공개 값)
 bot_app_id() {
   local f; f="$(bot_env_file "$1")"
-  [[ -f "$f" ]] || die "봇 env 없음: $f"
+  [[ -f "$f" ]] || { warn "봇 env 없음: $f"; return 1; }
   grep -E '^DISCORD_APP_ID=' "$f" | head -1 | cut -d= -f2- | tr -d '"\r'
+}
+reviewer_app_id() {
+  role_enabled 리뷰어 || return 0
+  local b; b="$(route_get '["bots"]["리뷰어"]')" || return 0
+  # 검수 봇을 아직 만들지 않았어도 다른 역할의 dry-run/기동을 막지 않는다.
+  bot_app_id "$b" 2>/dev/null || true
+}
+ops_bot() {
+  local role
+  for role in 상담역 접수원 리뷰어; do
+    if role_enabled "$role"; then route_get "[\"bots\"][\"$role\"]"; return; fi
+  done
+  worker_bots | head -1
 }
 
 # --- 프로세스 -------------------------------------------------------------
@@ -88,6 +98,12 @@ ops_log() {
   discord_api "$1" POST "/channels/$ch/messages" "$(python3 -c 'import json,sys;print(json.dumps({"content":sys.argv[1],"allowed_mentions":{"parse":[]}}))' "$2 ($(date +%H:%M))")" >/dev/null 2>&1 || true
 }
 discord_archive_thread() { discord_api "$1" PATCH "/channels/$2" '{"archived":true}' >/dev/null || log "스레드 보관 실패 HTTP $DISCORD_HTTP ($2)"; }
+# 검수 봇이 새 스레드의 멘션 자동완성에도 나타나도록 참가시킨다.
+discord_join_reviewer() {
+  role_enabled 리뷰어 || return 0
+  local reviewer; reviewer="$(route_get '["bots"]["리뷰어"]')"
+  discord_api "$reviewer" PUT "/channels/$1/thread-members/@me" >/dev/null || warn "검수 봇 스레드 참가 실패: $1"
+}
 
 # --- 등록부 state/threads/<id>.json ---------------------------------------
 registry_file() { print -- "$THREADS_DIR/$1.json"; }
@@ -96,10 +112,11 @@ registry_get() {
   [[ -f "$f" ]] || return 0
   python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));v=d.get(sys.argv[2],"");print(v if v is not None else "")' "$f" "$2"
 }
-registry_write() { print -r -- "$2" | python3 -c 'import json,sys;d=json.load(sys.stdin);open(sys.argv[1],"w").write(json.dumps(d,ensure_ascii=False,indent=2)+"\n")' "$(registry_file "$1")"; }
+registry_write() { ensure_state; print -r -- "$2" | python3 -c 'import json,sys,os;d=json.load(sys.stdin);f=sys.argv[1];t=f+".tmp";open(t,"w").write(json.dumps(d,ensure_ascii=False,indent=2)+"\n");os.replace(t,f)' "$(registry_file "$1")"; }
 # registry_update <threadId> key=value ...   (값은 문자열; "null" 은 null)
 registry_update() {
   local f; f="$(registry_file "$1")"; shift
+  ensure_state
   python3 - "$f" "$@" <<'PY'
 import json, sys, os
 f = sys.argv[1]
@@ -107,7 +124,9 @@ d = json.load(open(f)) if os.path.exists(f) else {}
 for kv in sys.argv[2:]:
     k, _, v = kv.partition("=")
     d[k] = None if v == "null" else v
-open(f, "w").write(json.dumps(d, ensure_ascii=False, indent=2) + "\n")
+t = f + ".tmp"
+open(t, "w").write(json.dumps(d, ensure_ascii=False, indent=2) + "\n")
+os.replace(t, f)
 PY
 }
 # registry_list [status]  → "threadId<TAB>status<TAB>project<TAB>bot<TAB>terminalHandle<TAB>startedAt"
@@ -115,10 +134,14 @@ registry_list() {
   python3 - "$THREADS_DIR" "${1:-}" <<'PY'
 import json, sys, os, glob
 d, want = sys.argv[1], sys.argv[2]
-for f in sorted(glob.glob(os.path.join(d, "*.json"))):
+rows = []
+for f in glob.glob(os.path.join(d, "*.json")):
     try: r = json.load(open(f))
     except Exception: continue
     if want and r.get("status") != want: continue
+    if not r.get("threadId"): continue
+    rows.append(r)
+for r in sorted(rows, key=lambda r: (r.get("queuedAt") or r.get("startedAt") or "", r["threadId"])):
     print("\t".join(str(r.get(k) or "") for k in ("threadId","status","project","bot","terminalHandle","startedAt")))
 PY
 }
@@ -148,10 +171,12 @@ for e in json.load(open(ipf)).get("plugins", {}).get(pid, []):
 sys.exit(1)
 PY
   log "플러그인 설치: $PLUGIN_ID @ $p"
-  (cd "$p" && claude plugin install "$PLUGIN_ID" --scope project >/dev/null) || die "플러그인 설치 실패 ($p). 'claude plugin marketplace add ~/orchestrator/plugin' 먼저 확인"
+  (cd "$p" && claude plugin install "$PLUGIN_ID" --scope project >/dev/null) || die "플러그인 설치 실패 ($p). claude plugin marketplace add '$ORCH_ROOT/plugin' 먼저 확인"
 }
 
 # --- Orca -----------------------------------------------------------------
+orca() { command "$ORCA_BIN" "$@"; }
+claude() { command "$CLAUDE_BIN" "$@"; }
 orca_ok() { orca status --json >/dev/null 2>&1; }
 json_get() { python3 -c '
 import json,sys
@@ -162,19 +187,34 @@ for k in sys.argv[2].split("."):
 print(d if not isinstance(d,(dict,list)) else json.dumps(d,ensure_ascii=False))' "$1" "$2"; }
 shq() { print -r -- "${(qq)1}"; }
 
+# Orca 터미널은 호출 셸의 환경을 상속한다고 가정하지 않는다. 비밀 값은 넣지 않는다.
+runtime_exports() {
+  local key
+  print -n -- 'export '
+  for key in ORCH_ROOT ROUTES_FILE STATE_DIR_ROOT BOTS_DIR ORCH_CODEX_AUTH_FILE ORCA_BIN CODEX_BIN CLAUDE_BIN PATH; do
+    print -n -r -- "$key=$(shq "${(P)key}") "
+  done
+  [[ -z "${CODEX_HOME:-}" ]] || print -n -r -- "CODEX_HOME=$(shq "$CODEX_HOME") "
+  print -- '; '
+}
+runtime_context() {
+  print -r -- "운영 경로: ORCH_ROOT=$ORCH_ROOT / ROUTES_FILE=$ROUTES_FILE / STATE_DIR_ROOT=$STATE_DIR_ROOT / BOTS_DIR=$BOTS_DIR. 역할 문서의 환경변수 경로는 이 실제 경로로 치환한다. 비활성 역할에는 요청을 보내지 않는다."
+}
+
 # accept_prompts <terminal handle> [timeout초]
 # 기동 직후 뜨는 대화형 프롬프트(폴더 신뢰, 개발 채널 확인)를 자동 수락한다. 프롬프트(❯)가 뜨거나 타임아웃이면 종료.
 accept_prompts() {
   local h="$1" limit="${2:-45}" t=0 tail
   while (( t < limit )); do
     sleep 3; t=$((t+3))
-    tail="$(orca terminal read --terminal "$h" --limit 40 --json 2>/dev/null | python3 -c 'import sys,json
+    tail="$(orca terminal read --terminal "$h" --screen --limit 40 --json 2>/dev/null | python3 -c 'import sys,json
 try:
   d=json.load(sys.stdin)["result"]["terminal"]; print(d.get("status",""),"|"," ".join(l for l in d["tail"] if l.strip()))
 except Exception: print("")')"
     case "$tail" in
       exited*) return 1 ;;
-      *"I trust this folder"*) orca terminal send --terminal "$h" --text $'\e[A' --json >/dev/null 2>&1; sleep 1; orca terminal send --terminal "$h" --text "" --enter --json >/dev/null 2>&1 ;;
+      *"❯ No, exit"*) orca terminal send --terminal "$h" --text $'\e[A' --json >/dev/null 2>&1; sleep 1; orca terminal send --terminal "$h" --text "" --enter --json >/dev/null 2>&1 ;;
+      *"I trust this folder"*) orca terminal send --terminal "$h" --text "" --enter --json >/dev/null 2>&1 ;;
       *"local development"*) orca terminal send --terminal "$h" --text "" --enter --json >/dev/null 2>&1 ;;
       *"bypass permissions on"*|*"❯"*) return 0 ;;
     esac
@@ -207,6 +247,7 @@ wait_plugin() {
 # 사용: 스크립트 앞부분에서 `with_thread_lock "$thread" "$0" "$@"`
 with_thread_lock() {
   local thread="$1"; shift
+  ensure_state
   if [[ "${ORCA_WORKER_SPAWN_LOCK_PARENT:-}" != "$PPID" || -z "${ORCA_WORKER_SPAWN_LOCK_FD:-}" || ! "/dev/fd/${ORCA_WORKER_SPAWN_LOCK_FD:-none}" -ef "$THREADS_DIR/$thread.spawn.lock" ]]; then
     exec python3 "$ORCH_ROOT/bin/worker-spawn-lock.py" "$THREADS_DIR/$thread.spawn.lock" "$@"
   fi

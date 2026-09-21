@@ -9,19 +9,29 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 cmd="${1:-status}"; request_file="${2:-}"
 reg="$STATE_DIR_ROOT/vision.json"; prompt_file="$STATE_DIR_ROOT/vision.prompt.md"
-channel="$(lounge_channel)"; [[ -n "$channel" ]] || die "routes.json 에 kind=lounge 채널이 없다"
-bot="$(route_get "[\"routes\"][\"$channel\"][\"bot\"]")"
-vpath="$(project_path_of "$channel")"
 sd="$(state_root)/workers/vision"
 control() { bun "$ORCH_ROOT/codex-worker/control.ts" "$1" "$reg"; }
 alive() { [[ -f "$reg" ]] && control health >/dev/null 2>&1; }
 reg_get() { python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));v=d.get(sys.argv[2],"");print(v if v is not None else "")' "$reg" "$1" 2>/dev/null || true; }
+
+if [[ "$cmd" != stop ]] && ! role_enabled 비전; then
+  [[ "$cmd" == status ]] || die "비전 역할이 비활성화되어 있습니다"
+  print -- '비전: 비활성'; exit 0
+fi
+if [[ "$cmd" == stop || "$cmd" == status ]]; then
+  bot="$(reg_get bot)"
+else
+  channel="$(lounge_channel)"; [[ -n "$channel" ]] || die "routes.json 에 kind=lounge 채널이 없다"
+  bot="$(route_get "[\"routes\"][\"$channel\"][\"bot\"]")"
+  vpath="$(project_path_of "$channel")"
+fi
 
 case "$cmd" in
   status)
     if alive; then print -- "비전: alive session=$(reg_get sessionId) since=$(reg_get startedAt) terminal=$(reg_get terminalHandle)"
     else print -- "비전: down (마지막 세션 $(reg_get sessionId))"; fi ;;
   fresh|resume)
+    ensure_state
     alive && die "비전이 실행 중이다. 진행 중 작업이 끊겨도 되면 먼저 'vision.sh stop'."
     orca_ok || die "Orca 런타임 응답 없음"
     [[ -f "$reg" ]] && { control stop >/dev/null 2>&1 || die "이전 백엔드 정리 미확인 — 프로세스를 확인하라"; }   # 크래시로 남은 app-server 정리
@@ -52,7 +62,7 @@ PY
   attach)
     alive || die "비전이 실행 중이 아니다 (fresh 또는 resume)"
     old="$(reg_get terminalHandle)"; [[ -z "$old" ]] || orca terminal close --terminal "$old" --tab --json >/dev/null 2>&1 || true
-    inner="cd $(shq "$vpath") && exec bun $(shq "$ORCH_ROOT/codex-worker/control.ts") attach $(shq "$reg")"
+    inner="$(runtime_exports) cd $(shq "$vpath") && exec bun $(shq "$ORCH_ROOT/codex-worker/control.ts") attach $(shq "$reg")"
     out="$(orca terminal create --worktree "path:$vpath" --title "비전" --command "$inner" --json)" || die "orca terminal create 실패: $out"
     handle="$(json_get "$out" result.terminal.handle)"
     python3 -c 'import json,sys;p=sys.argv[1];d=json.load(open(p));d["terminalHandle"]=sys.argv[2];json.dump(d,open(p,"w"),ensure_ascii=False,indent=2)' "$reg" "$handle"

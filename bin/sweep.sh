@@ -32,16 +32,26 @@ registry_list active | while IFS=$'\t' read -r tid st project bot handle started
 done
 
 # 고아 lease: pool 에 잡혀 있으나 등록부가 active 가 아닌 스레드
-python3 - "$POOL_FILE" <<'PY' | while read -r tid; do
-import json, sys
+python3 - "$POOL_FILE" "$THREADS_DIR" "$ORCH_ROOT/bin/pool.sh" <<'PY'
+import json, sys, pathlib, fcntl, subprocess
 try: pool = json.load(open(sys.argv[1]))
 except Exception: sys.exit(0)
+threads = pathlib.Path(sys.argv[2])
 for b, e in pool.items():
-    if e.get("threadId"): print(e["threadId"])
+    tid = e.get("threadId")
+    if not tid: continue
+    if not isinstance(tid, str) or not tid.isdigit(): continue
+    # 검사부터 풀 반환까지 같은 락을 유지한다. 검사 직후 새 스폰이
+    # 시작되어 그 lease를 회수하는 경쟁을 막는다.
+    threads.mkdir(parents=True, exist_ok=True)
+    with (threads / f"{tid}.spawn.lock").open("a+") as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: continue
+        try: record = json.loads((threads / f"{tid}.json").read_text())
+        except FileNotFoundError: record = {}
+        except (OSError, ValueError): continue
+        if record.get("status") == "active": continue
+        result = subprocess.run([sys.argv[3], "release", tid], stdout=subprocess.DEVNULL)
+        if result.returncode == 0: print(f"고아 lease 회수: {tid}", file=sys.stderr)
 PY
-  [[ -n "$tid" ]] || continue
-  if [[ "$(registry_get "$tid" status)" != "active" ]]; then
-    log "고아 lease 회수: $tid"; "$ORCH_ROOT/bin/pool.sh" release "$tid" >/dev/null || true
-  fi
-done
 print -- "sweep done $(now)"

@@ -1,6 +1,6 @@
 #!/bin/zsh
 # 마크 종료. finish-worker.sh <threadId> <succeeded|failed|stopped>
-# 스레드 이름·보관 → 터미널 close → PID kill → 등록부 → 풀 반납 → STATE_DIR 삭제 → 대기열 스폰
+# 스레드 이름·보관 → 등록부 → 풀 반납 → STATE_DIR 삭제 → 대기열 스폰 → 터미널 close / PID kill
 # (작업자가 자기 finish 를 부르면 터미널 close 에서 자기 프로세스가 죽는다. 그 전에 Discord 답장을 끝내 둔다.)
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -30,11 +30,8 @@ if [[ -n "$tname" ]]; then
 fi
 [[ -n "$bot" ]] && discord_archive_thread "$bot" "$thread"
 
-# 프로세스 정리: 터미널 close, 남으면 PID kill (재부팅 후 재사용된 PID 는 건드리지 않는다)
-[[ -z "$handle" ]] || orca terminal close --terminal "$handle" --tab --json >/dev/null 2>&1 || true
-if pid_is "$pid" claude; then
-  sleep 3; kill -TERM "$pid" 2>/dev/null || true; sleep 3; pid_is "$pid" claude && kill -KILL "$pid" 2>/dev/null || true
-fi
+# 터미널을 먼저 닫으면 자기 세션에서 호출한 정리 스크립트도 종료될 수 있다.
+# 등록부·풀·로그 정리를 끝낸 뒤 맨 마지막에 터미널을 닫는다.
 rm -f "$pidf" "$THREADS_DIR/$thread.activity" "$THREADS_DIR/$thread.progress.json" "$THREADS_DIR/$thread.progress.lock"
 registry_update "$thread" "status=$st" "endedAt=$(now)"
 "$ORCH_ROOT/bin/pool.sh" release "$thread" >/dev/null || log "pool release 실패"
@@ -50,3 +47,9 @@ if [[ -n "$q" ]]; then
 fi
 [[ -n "$bot" ]] && ops_log "$bot" "$prefix $(route_get "[\"botDisplay\"][\"$bot\"]" 2>/dev/null || print -- "$bot") 종료 ($st) — $project · $(registry_get "$thread" taskTitle)"
 print -- "finished thread=$thread status=$st bot=${bot:-?}"
+
+# 프로세스 정리 (재부팅 후 재사용된 PID 는 건드리지 않는다).
+[[ -z "$handle" ]] || orca terminal close --terminal "$handle" --tab --json >/dev/null 2>&1 || true
+if pid_is "$pid" claude; then
+  sleep 3; kill -TERM "$pid" 2>/dev/null || true; sleep 3; pid_is "$pid" claude && kill -KILL "$pid" 2>/dev/null || true
+fi

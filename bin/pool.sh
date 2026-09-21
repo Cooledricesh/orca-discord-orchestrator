@@ -13,13 +13,24 @@ import json, sys, os, fcntl, datetime
 pool_file, lock_file, cmd, tid, bots = sys.argv[1:6]
 bots = [b for b in bots.split(",") if b]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def read_pool():
+    try:
+        return json.load(open(pool_file))
+    except FileNotFoundError:
+        return {}
+
+if cmd == "status":
+    pool = read_pool()
+    print(f"{sum(bool(pool.get(b, {}).get('threadId')) for b in bots)}/{len(bots)} 사용 중")
+    for b in bots:
+        e = pool.get(b, {})
+        print(f"  {b}\t{e.get('threadId') or '-'}\t{e.get('since') or ''}")
+    sys.exit(0)
+
 os.makedirs(os.path.dirname(pool_file), exist_ok=True)
 with open(lock_file, "w") as lk:
     fcntl.flock(lk, fcntl.LOCK_EX)
-    try:
-        pool = json.load(open(pool_file))
-    except Exception:
-        pool = {}
+    pool = read_pool()
     for b in bots:
         pool.setdefault(b, {"threadId": None, "since": None})
     # Preserve retired active leases until explicitly released; never reallocate them.
@@ -39,12 +50,6 @@ with open(lock_file, "w") as lk:
             if pool[b]["threadId"] == tid:
                 pool[b] = {"threadId": None, "since": None}
                 print(b)
-    elif cmd == "status":
-        used = sum(1 for b in bots if pool[b]["threadId"])
-        print(f"{used}/{len(bots)} 사용 중")
-        for b in bots:
-            e = pool[b]
-            print(f"  {b}\t{e['threadId'] or '-'}\t{e['since'] or ''}")
     else:
         print("unknown command", file=sys.stderr); rc = 2
     tmp = pool_file + ".tmp"
