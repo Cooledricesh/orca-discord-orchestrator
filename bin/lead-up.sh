@@ -39,7 +39,7 @@ ensure_state
 mkdir -p "$STATE_DIR_ROOT/leads"
 mkstate "$sd" "$bot" "$access"
 ensure_plugin "$cwd"
-out="$(orca terminal create --worktree "path:$ORCH_ROOT" --title "$role" --command "$inner" --json)" || die "orca terminal create 실패: $out"
+out="$(orca terminal create --worktree "path:$ORCH_ROOT" --title "$(lead_title "$role")" --command "$inner" --json)" || die "orca terminal create 실패: $out"
 handle="$(json_get "$out" result.terminal.handle)"
 print -- "$handle" > "$STATE_DIR_ROOT/leads/$role.term"
 if accept_prompts "$handle" 60; then

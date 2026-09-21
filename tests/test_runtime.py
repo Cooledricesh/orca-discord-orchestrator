@@ -35,6 +35,8 @@ if a[:2]==['worktree','create']:
         ref=a[a.index('--base-branch')+1]
         subprocess.run(['git','-C',source,'worktree','add','--detach',target,ref],check=True,capture_output=True)
     print(json.dumps({'result':{'worktree':{'path':target}}}));sys.exit(0)
+if a[:2]==['terminal','show']:
+    print(json.dumps({'result':{'terminal':json.loads(os.environ['TEST_TERMINAL_JSON'])}}));sys.exit(0)
 if a[:2]==['terminal','create']:sys.exit(1)
 if a[:2]==['terminal','close'] and 'TEST_CLOSE_SNAPSHOT' in os.environ:
     state=pathlib.Path(os.environ['ORCH_ROOT'])/'state'
@@ -132,6 +134,28 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(access["allowFrom"], [self.cfg["ownerUserId"]])
         self.assertEqual(set(access["groups"]), {CHANNEL, self.cfg["opsLogChannelId"]})
         self.assertNotIn("local-test-only", result.stdout + result.stderr)
+
+    def test_model_restart_accepts_the_terminal_title_lead_up_creates(self):
+        """모델 변경 재시작은 lead-up.sh 가 실제로 만든 제목을 통과시켜야 한다 (봇 이름이 아니라 역할 이름)."""
+        folder = Path(self.cfg["stateRoot"]) / "bots"
+        folder.mkdir(parents=True)
+        bot = self.cfg["bots"]["접수원"]
+        (folder / f"{bot}.env").write_text("DISCORD_APP_ID=777777777777777777\nDISCORD_BOT_TOKEN=local-test-only\n")
+        # Fake Orca rejects the creation but records the arguments it was given.
+        self.command("lead-up.sh", "접수원")
+        create = next(c for c in self.calls() if c[:2] == ["terminal", "create"])
+        created_title = create[create.index("--title") + 1]
+
+        def identity(title):
+            record = json.dumps({"agentIdentity": "claude", "worktreePath": str(self.root), "title": title})
+            return subprocess.run(
+                ["zsh", "-c", 'source "$1"; terminal_is term_test "$(lead_title "$2")"', "test", str(self.root / "bin/lib.sh"), "접수원"],
+                env=dict(self.env, TEST_TERMINAL_JSON=record), capture_output=True, text=True, timeout=10,
+            ).returncode
+
+        self.assertEqual(identity(created_title), 0)
+        self.assertNotEqual(identity(bot), 0)
+        self.assertNotEqual(identity("접수원 (다른 설치)"), 0)
 
     def test_lead_model_effort_reaches_cli(self):
         self.cfg["models"]["상담역Effort"] = "high"

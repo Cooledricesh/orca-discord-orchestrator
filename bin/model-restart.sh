@@ -11,9 +11,7 @@ case "$role" in
     # Refuse an unresolvable handle before stopping the recorded Claude PID.
     if pid_is "$p" claude; then
       [[ "$h" == term_* ]] || die "missing terminal handle"
-      bot="$(route_get "[\"bots\"][\"$role\"]")"
-      info="$(orca terminal show --terminal "$h" --json)"
-      print -r -- "$info" | python3 -c 'import json,os,sys;t=json.load(sys.stdin)["result"]["terminal"];sys.exit(0 if t.get("agentIdentity")=="claude" and os.path.realpath(t.get("worktreePath", ""))==os.path.realpath(sys.argv[1]) and sys.argv[2] in t.get("title", "") else 1)' "$ORCH_ROOT" "$bot" || die "terminal identity mismatch"
+      terminal_is "$h" "$(lead_title "$role")" || die "terminal identity mismatch"
       kill -TERM "$p"
       for i in {1..20}; do pid_is "$p" claude || break; sleep 0.25; done
       pid_is "$p" claude && die "Claude did not stop"
