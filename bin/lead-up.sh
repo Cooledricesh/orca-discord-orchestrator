@@ -34,9 +34,19 @@ extra_args=" --append-system-prompt $(shq "$context")"
 
 inner="$(runtime_exports) cd $(shq "$cwd") && print \$\$ > $(shq "$STATE_DIR_ROOT/leads/$role.pid") && DISCORD_STATE_DIR=$(shq "$sd") DISCORD_ACCESS_MODE=static DISCORD_ACTIVITY_FILE=$(shq "$STATE_DIR_ROOT/leads/$role.activity") $extra_env ORCA_ROLE=$role exec $(shq "$CLAUDE_BIN") --dangerously-skip-permissions --model $(shq "$model") --name $(shq "$bot") $plugin --settings $(shq "$ORCH_ROOT/templates/progress-settings.json")$extra_args"
 [[ "${DRY:-0}" == 1 ]] && { print -r -- "$inner"; exit 0; }
-orca_ok || die "Orca 런타임 응답 없음"
 ensure_state
 mkdir -p "$STATE_DIR_ROOT/leads"
+if [[ "${ORCA_LEAD_START_LOCK_PARENT:-}" != "$PPID" || -z "${ORCA_LEAD_START_LOCK_FD:-}" || ! "/dev/fd/${ORCA_LEAD_START_LOCK_FD:-none}" -ef "$STATE_DIR_ROOT/leads/$role.start.lock" ]]; then
+  exec python3 "$ORCH_ROOT/bin/lead-start-lock.py" "$STATE_DIR_ROOT/leads/$role.start.lock" "$0" "$@"
+fi
+orca_ok || die "Orca 런타임 응답 없음"
+p="$(cat "$STATE_DIR_ROOT/leads/$role.pid" 2>/dev/null || true)"
+if pid_is "$p" claude; then
+  h="$(cat "$STATE_DIR_ROOT/leads/$role.term" 2>/dev/null || true)"
+  terminal_is "$h" "$role" || die "기존 세션의 터미널 신원을 확인할 수 없습니다"
+  print -- "$role: 이미 실행 중 (pid $p); 중복 기동하지 않습니다"
+  exit 0
+fi
 mkstate "$sd" "$bot" "$access"
 ensure_plugin "$cwd"
 out="$(orca terminal create --worktree "path:$ORCH_ROOT" --title "$(lead_title "$role")" --command "$inner" --json)" || die "orca terminal create 실패: $out"

@@ -136,7 +136,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("local-test-only", result.stdout + result.stderr)
 
     def test_model_restart_accepts_the_terminal_title_lead_up_creates(self):
-        """모델 변경 재시작은 lead-up.sh 가 실제로 만든 제목을 통과시켜야 한다 (봇 이름이 아니라 역할 이름)."""
+        """기동 제목과 Claude가 갱신하는 봇 제목을 모두 같은 설치로 식별한다."""
         folder = Path(self.cfg["stateRoot"]) / "bots"
         folder.mkdir(parents=True)
         bot = self.cfg["bots"]["접수원"]
@@ -168,6 +168,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("미커밋 변경", result.stderr)
         self.assertEqual(self.calls(), [])
+
+    def test_existing_lead_does_not_create_duplicate_terminal(self):
+        folder = self.root / "state/leads"
+        folder.mkdir(parents=True)
+        (folder / "접수원.pid").write_text("123")
+        (folder / "접수원.term").write_text("term_test")
+        lib = self.root / "bin/lib.sh"
+        lib.write_text(lib.read_text() + '\npid_is() { return 0; }\n')
+        info = json.dumps({"agentIdentity": "claude", "worktreePath": str(self.root), "title": "✳ 해피"})
+        result = self.command("lead-up.sh", "접수원", TEST_TERMINAL_JSON=info)
+        self.assert_ok(result)
+        self.assertIn("이미 실행 중", result.stdout)
+        self.assertFalse(any(c[:2] == ["terminal", "create"] for c in self.calls()))
+
+    def test_lead_start_lock_rejects_concurrent_start(self):
+        lock_path = self.area / "lead.lock"
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = self.command("lead-start-lock.py", str(lock_path), "/not-executed")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("기동이 이미 진행 중", result.stderr)
 
     def test_lead_model_effort_reaches_cli(self):
         self.cfg["models"]["상담역Effort"] = "high"
