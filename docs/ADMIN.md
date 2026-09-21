@@ -1,60 +1,172 @@
-# 관리 세션
+# 운영 가이드
 
-이 폴더에서 `./lead.sh` 로 뜨는 세션은 **관리 세션**이다. Discord 에 붙지 않는다. 설계·스크립트·역할 지침을 고치고 검증하는 자리다. 구조는 `SPEC.md`.
-
-## 절대 규칙
-- **자기 자신을 죽이지 않는다.** 이 세션은 Orca 터미널의 `lead.sh` 프로세스다. `kill`, `pkill claude`, 핸들 없는 `orca terminal close` 전에 `ps -o pid,command -p $PPID` 로 확인한다.
-- `orca terminal close/read/send` 는 항상 `--terminal <핸들>`.
-- 봇 토큰(`~/.claude/channels/bots/*.env`)을 출력·커밋하지 않는다.
-- 프로젝트 폴더는 직접 수정하지 않는다. 실작업은 Discord → 마크.
-- zsh 에서 `path` 변수를 쓰지 않는다 (`PATH` 와 묶여 있다).
+저장소 폴더에서 실행한다. `./lead.sh`는 Discord에 연결하지 않는 관리용 Claude 세션이다. 자기 관리 터미널을 종료하지 않도록 Orca 명령은 항상 정확한 핸들을 사용한다. 봇 env와 인증 파일은 출력·커밋하지 않는다.
 
 ## 명령
-| 명령 | 역할 |
+
+| 명령 | 동작 |
 |---|---|
-| `bin/lead-up.sh <상담역\|접수원>` | 상시 세션을 Orca 터미널에 기동 (STATE_DIR·access.json 생성, 프롬프트 자동 수락). `DRY=1` 이면 명령만 출력 |
-| `bin/leads-check.sh [--restart <역할>]` | 죽은 상시 세션 재기동, 살아 있는 상시 세션·마크에 플러그인 자식이 없으면 #운영-로그에 ⚠️ 1회(`state/plugin-missing/`), 켜 둔 비전이 죽어 있으면 `vision.sh resume` (launchd 5분). `--restart` 는 컨텍스트 비우기 |
-| `bin/open-thread.sh <봇> <채널> <메시지id\|new> <이름\|@file> [<본문\|@file>]` | 스레드 생성 |
-| `bin/spawn-worker.sh <채널> <스레드> [--title t\|@file] [--request-file f] [--request-message-id id] [--model m] [--effort e] [--new-worktree] [--resume] [--dry-run]` | 마크 스폰. exit 3 = 풀 꽉 참(queued) |
-| `bin/finish-worker.sh <스레드> succeeded\|failed\|stopped` / `bin/stop-worker.sh <스레드>` | 마크 종료 / 강제 종료 |
-| `bin/retry-queued.sh <스레드>` | queued 재시도 (finish 가 자동 호출) |
-| `bin/sweep.sh` | 죽은 터미널·30분 무응답 마크 정리, 고아 lease 회수 (launchd 5분). 언제 돌려도 안전해야 한다 |
-| `bin/pool.sh lease\|release\|status` | 마크 봇 풀 |
-| `bin/status.sh` | 봇 상태 한 화면 (상시 세션·마크의 플러그인 자식, 풀, 대기열, 비전, 자비스). #운영-로그에 사용자가 쓰면 접수원이 실행해 올린다 |
-| `bin/post-result.sh` | 마크 결과 카드 (소유자 멘션 포함) |
-| `bin/vision.sh fresh [요청파일]\|resume\|attach\|stop\|status` | 비전. 실행 중이면 fresh/resume 전에 stop |
-| `bin/jarvis-up.sh [--fg]` / `bin/jarvis-down.sh` | 자비스 (launchd KeepAlive 가 관리. 코드 반영은 `jarvis-down.sh` 만 하면 다시 뜬다) |
+| `python3 bin/setup.py doctor [--offline] [--json]` | 읽기 전용 준비 상태 점검 |
+| `python3 bin/setup.py bot-env <봇>` | 직접 연 터미널에서 앱 ID·토큰 저장 |
+| `python3 bin/setup.py invites` | 활성 봇별 초대 URL 출력 |
+| `bin/lead-up.sh 상담역` / `접수원` | 상시 Claude 봇 기동. `DRY=1`이면 실행 내용만 출력 |
+| `bin/leads-check.sh [--restart <역할>]` | 활성 상시 역할 복구, 플러그인 누락 감시. restart는 새 컨텍스트 |
+| `bin/open-thread.sh <봇> <채널> <메시지ID 또는 new> <제목 또는 @file> [본문 또는 @file]` | Discord 스레드 생성 |
+| `bin/spawn-worker.sh <채널> <스레드> [--title t 또는 @file] [--request-file f] [--resume] [--dry-run]` | 작업 전용 worktree 스폰. exit 3이면 queued |
+| `bin/finish-worker.sh <스레드> succeeded 또는 failed 또는 stopped` | 작업 정리·봇 반환·대기열 재시도 |
+| `bin/stop-worker.sh <스레드>` | stopped로 정리 |
+| `bin/retry-queued.sh <스레드>` | 대기 작업 재시도 |
+| `bin/sweep.sh` | 종료된 터미널·30분 이상 유휴 작업 정리·고아 lease 회수 |
+| `bin/pool.sh status` / `bin/status.sh` | 풀 / 전체 상태 확인 |
+| `bin/jarvis-up.sh [--fg]` | 자비스 기동. --fg는 launchd용 |
+| `bin/jarvis-down.sh` / `bin/jarvis-restart.sh` | 자비스 종료 / 설정을 다시 읽고 재시작 |
+| `bin/vision.sh fresh 또는 resume 또는 attach 또는 stop 또는 status` | 활성화했을 때만 쓰는 비전 제어 |
 
-## 알아둘 것
-- 플러그인은 공식 경로대로 세션 cwd 폴더에 project 스코프로 설치돼 뜬다 (`lib.sh ensure_plugin`, 저장소 `plugin/discord-orca/` 를 직접 실행). `--plugin-dir` 로는 배너가 깨끗해도 채널 메시지가 주입되지 않는다 (2026-09-10 실측, claude-code#43064). 같은 폴더에서 사용자가 직접 켠 claude 도 플러그인을 로드하지만 토큰이 없으면 `server.ts` 가 실패 대신 도구 없이 대기하므로, Claude Code 전역 15분 실패 캐시(`~/.claude/mcp-needs-auth-cache.json`)를 오염시키지 않는다 (09-09~10 장애 원인은 이 캐시였다). 수정 후 해당 세션을 재시작하면 반영된다.
-- 같은 프로젝트 폴더에서 사용자가 직접 `claude` 를 켜도 된다 (플러그인 무관). 마크와 대화하려면 **떠 있는 마크 탭에 직접 타이핑**한다 (Discord 와 같은 세션). Orca 사이드바에서 마크 세션을 새로 열면 플러그인 없이 뜨므로 Discord 를 못 듣는다. 그 세션은 사용자 것이 되고 스레드는 sweep 이 ❌ 정리한다.
-- 역할 지침(`sessions/*/CLAUDE.md`, `roles/*.md`)·env 변경은 세션 재시작 후 적용된다: 상담역·접수원은 `leads-check.sh --restart`, 마크는 다음 스폰부터, 비전은 `vision.sh stop && fresh|resume`, 자비스는 새 스레드부터.
-- Discord 앱에서 스레드를 열면 채널처럼 보인다. 새 작업은 채널 최상위에 써야 새 스레드가 생긴다.
-- 재부팅 후: launchd → 자비스 즉시, 상담역·접수원·비전(stop 하지 않았던 경우, 직전 세션 resume)은 leads-check 5분 틱. 마크는 복구되지 않는다 (sweep 이 ❌ 정리, 스레드에 다시 쓰면 재스폰).
-- #운영-로그: 상시 세션 시작, 마크 배정·종료, 비전 fresh/resume/stop 이 한 줄씩 올라간다 (`lib.sh ops_log`).
-- 세션이 떠도 Discord 플러그인 자식(`bun server.ts`)이 안 붙는 경우가 있다. lead-up·spawn-worker 가 기동 후 40초 안에 플러그인 자식과 배너(`plugin not installed` 없음)를 확인하고(`lib.sh plugin_ready`) 아니면 한 번 다시 띄운다. 그래도 없으면 스레드와 #운영-로그에 ⚠️ 를 올리고 출력 `plugin=missing` 으로 접수원에게 알린다 (접수원이 스레드에 경고). 살아 있는 세션의 플러그인 유무는 leads-check 5분 틱이 보고 상태가 바뀔 때만 알린다.
-- 새 프로젝트: `roles/상담역-온보딩.md` (routes.json 추가 → 접수원 재시작).
+작업자가 종료 스크립트를 자기 세션에서 실행할 때는 Discord 답장을 모두 마친 후 마지막 행동으로 부른다. 종료 후 `pool.sh status`로 반환을 확인한다. 종료 중 프로세스가 끊겨 상태가 남으면 관리 세션의 `sweep.sh`로 회수 상태를 확인한다.
 
-## launchd
-plist 는 `~/Library/LaunchAgents/` 에 **symlink** 로 둔다 (저장소 경로에서 직접 bootstrap 하면 재부팅 후 사라진다).
-```
-for p in leads-check 접수원-restart sweep jarvis; do
-  ln -sf ~/orchestrator/launchd/ai.orca.$p.plist ~/Library/LaunchAgents/ai.orca.$p.plist
-  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.orca.$p.plist
-done
-launchctl print gui/$(id -u)/ai.orca.sweep | head      # 상태
-launchctl kickstart -k gui/$(id -u)/ai.orca.sweep      # 즉시 실행
-launchctl bootout gui/$(id -u)/ai.orca.sweep           # 해제 (plist 수정 후 bootout → bootstrap)
-```
-로그: `state/log/`. 자비스는 `~/.claude/channels/bots/자비스.env` 와 `~/.codex/auth.json` 이 있어야 뜬다.
+## 설정 변경
 
-## 검증
+- 새 프로젝트: Git 기준 커밋 확인 → Orca 등록 → routes 추가 → 접수원과 자비스 재시작. [상담역 온보딩](../roles/상담역-온보딩.md) 참고.
+- 모델·역할·env 변경: 상시 Claude는 재기동, 마크는 다음 스폰, 자비스는 restart. 자비스의 기존 Codex resume 세션에는 이전 지침이 남을 수 있다.
+- 비전 설정 변경: `stop` 후 `fresh` 또는 `resume`.
+- 역할 비활성: 실행 중인 해당 세션을 먼저 종료하고 enabled를 변경한다. 자비스는 `jarvis-down.sh`, 비전은 `vision.sh stop`, 마크는 각 스레드 종료, 상시 Claude는 `<STATE_DIR_ROOT>/leads/<역할>.term`의 핸들을 확인해 Orca에서 해당 터미널을 닫는다. 자동 실행을 이미 설치했다면 해당 launchd job을 먼저 해제한다.
+- 설정 경로 변경: 새 셸/세션에 경로를 적용하고 launchd 파일을 다시 생성·등록한다.
+
+플러그인은 `ensure_plugin`이 세션 cwd에 project 스코프로 설치한다. `--plugin-dir`를 추가하지 않는다. 기동 시 플러그인 자식과 터미널 배너를 확인하지만, Discord 메시지 왕복 테스트가 최종 연결 확인이다.
+
+일반 셸의 `claude auth status`가 정상인데 봇에 `Login expired` 또는 `Not logged in`이 뜨면 **Orca 안의 터미널에서도** 같은 명령을 확인한다. macOS 실행 환경에 따라 인증 저장소 접근 결과가 다를 수 있다. Orca 쪽이 로그아웃 상태라면 그 터미널에서 `claude auth login --claudeai`로 인증한 뒤 해당 봇을 재시작한다. 토큰을 터미널 명령 인자에 복사하지 않는다.
+
+자비스의 정상 종료는 exit 0이므로 **jarvis-down만으로 자동 재시작된다고 가정하지 않는다.** 코드·라우트 변경에는 `jarvis-restart.sh`를 쓴다. 인증 갱신은 `codexAuthFile`의 원본 계정을 다시 로그인한 다음:
+
+```sh
+# lib.sh의 경로 환경을 동일하게 적용하기 위해 zsh에서 실행한다.
+zsh -c 'source ./bin/lib.sh; bun "$ORCH_ROOT/jarvis/server.ts" reauth'
+bin/jarvis-restart.sh
 ```
-(cd codex-worker && bun run typecheck && bun test)
-(cd jarvis && bun run typecheck && bun test)
-(cd plugin/discord-orca && bun test)
-for f in bin/*.sh; do zsh -n "$f" || echo FAIL $f; done
-./bin/spawn-worker.sh <채널> <스레드> --title "…" --dry-run     # 풀·등록부를 건드리지 않는다
-DRY=1 ./bin/lead-up.sh 접수원
+
+## 소유자 DM
+
+### 프라이데이 모델 관리 (Claude 호출 없음)
+
+프라이데이 1:1 DM에 명령을 직접 입력한다. 일반 채팅이나 Discord 슬래시 명령이 아니라 `!`로 시작하는 텍스트 명령이다.
+Discord 플러그인이 수신 즉시 처리하므로 Claude API 사용량 제한 중에도 동작한다. 플러그인/PC 자체가 꺼져 있으면 동작하지 않는다.
+
+| 명령 | 동작 |
+|---|---|
+| `!모델` | 설정 기본값과 최근 변경 결과 (실제 응답 성공 여부와 다름) |
+| `!모델 목록` | Claude 별칭 및 로컬 Codex 카탈로그의 모델/effort |
+| `!모델 해피 sonnet medium` | 변경 영향과 확인 코드 표시, 아직 저장하지 않음 |
+| `!모델 자비스 gpt-6-astra xhigh` | 자비스 변경 제안 |
+| `!모델 확인 <코드>` | 5분 내 동일 소유자·동일 DM에서 확정하고 적용 |
+| `!모델 취소` | 미확정 제안 취소 |
+
+effort 생략 시 기존 설정 유지, `default`이면 CLI 기본값. 자비스의 `default default`는 모델과 effort 모두 기본값으로 복원한다.
+프라이데이·해피는 해당 세션을 재시작하므로 진행 중 응답/컨텍스트가 끊길 수 있다. 자비스도 재시작하고 다음 요청을 새 Codex 대화로 시작하되 이전 기록은 보존한다.
+마크는 작업자 공통 기본값만 변경하며 실행 중·이미 대기열에 들어간 작업·이전 세션 재개 설정은 바꾸지 않는다.
+Claude 봇은 Claude 모델만, 자비스는 Codex 모델만 선택할 수 있다. 모델 변경은 계정 한도를 해제하지 않는다.
+
+구현: `plugin/discord-orca/model-control.ts` → `bin/model_control.py` → 확인 후 분리 프로세스에서 `bin/model-restart.sh`.
+모델/effort 이외의 설정은 보존하고 직전 routes를 `state/model-control/routes-before.json`에 백업한다.
+재시작 실패 시 설정 저장과 적용 실패를 구분해 알리며 `!모델`에서도 결과를 볼 수 있다. 주기 감시나 모델 호출은 추가하지 않는다.
+플러그인 코드 배포 후 실행 중인 프라이데이의 `/mcp`에서 `plugin:discord-orca:discord`를 Reconnect해야 한다.
+
+### 해피·자비스 DM
+
+해피와 자비스는 `routes.json`의 `ownerUserId`에 지정된 본인의 1:1 DM만 받는다.
+DM에서는 멘션이 필요 없고, 답변도 같은 DM으로 보낸다. 다른 사용자의 DM·그룹 DM·봇 DM은 허용하지 않는다.
+
+- 해피: 인사·접수 사용법·상태 확인에 응답한다. 실제 작업 배정은 프로젝트 채널/작업 스레드에서 한다.
+  DM 내용을 자동으로 서버에 옮기거나 DM ID로 작업자를 띄우지 않는다.
+- 자비스: 질문·검토 요청에 응답한다. DM별로 독립된 대화 상태를 사용하며, 대상이 불분명하면 프로젝트를 묻는다.
+  읽기 전용 정책은 유지한다. 서버 채널에서는 기존처럼 직접 `@자비스` 멘션이 필요하다.
+- 해피 접근 설정은 `bin/lead-up.sh`가 생성한다. static 모드라 실행 중인 Discord 플러그인을 재연결하거나
+  접수원을 재시작해야 수정된 허용 목록이 적용된다. 자비스 코드 변경은 `bin/jarvis-restart.sh`로 적용한다.
+- 변경 전에 보낸 DM은 자동 재처리하지 않는다. 적용 후 새 메시지부터 수신한다.
+
+## 모델 오류 알림 (이벤트 기반)
+
+Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json`의 `StopFailure` 훅으로
+사용량 제한·인증 실패·서버 오류를 감지한다. `bin/progress-hook.py` → `bin/failure_hook.py`가
+마지막 대화 채널/작업 스레드와 운영 로그에 원인을 전송한다. 모델 호출이나 주기 감시는 없다.
+전역 Orca 훅은 변경하지 않는다. 자비스는 Codex 기반이므로 이 Claude 훅의 대상이 아니다.
+
+- 사용량 제한 문구에 재개 시간이 있으면 그대로 표시하고, 없으면 `제공되지 않음`으로 알린다.
+- 같은 오류·재개 시간은 채널별 한 번만 알린다. 새 채널에서 다시 실패하거나 시간이 바뀌면 다시 알린다.
+- `state/leads/<역할>.failure.json` 또는 `state/threads/<스레드>.failure.json`에 실패 상태를 저장한다.
+  `bin/status.sh`는 같은 PID의 실패 기록이 있으면 ✅ 대신 `⛔ 응답 불가`를 표시한다.
+- 예상 재개 시간이 지나기만 했다고 정상으로 바꾸지 않는다. 실제 `Stop`(정상 턴 종료)이 확인되면 해제하고 복구 알림을 보낸다.
+- Discord 전송에 실패해도 실패 상태는 남는다. 다음 오류 이벤트에서 미전송 채널에 다시 시도하며 별도 재시도 데몬은 없다.
+- 훅 오류가 발생하면 기존 진행 표시와 typing 유지도 종료한다. 프로세스 강제 종료·Discord 연결 단절처럼
+  `StopFailure`가 발생하지 않는 장애까지 감지하는 기능은 아니다.
+
+새 세션은 템플릿을 읽는다. 실행 중인 세션의 `--settings` 파일은 즉시 다시 읽히지 않을 수 있으므로
+`/hooks`에서 `StopFailure`에 `progress-hook.py`가 등록되었는지 확인한다.
+대화를 유지하며 적용할 때는 해당 세션 cwd의 `.claude/settings.local.json`에 같은 훅을 병합할 수 있다.
+기존 설정을 덮어쓰지 않는다.
+
+## 자동 실행 등록
+
+수동 사용 확인 후 실행한다. 아래 작업은 봇을 실제로 기동한다. 생성 단계만으로는 등록·기동되지 않는다.
+
+```sh
+python3 bin/setup.py launchd
 ```
-실사용 점검: 프로젝트 채널 최상위에 메시지 → 스레드·마크 생성 → 후속 질문 → "종료". 잔여물은 `pool.sh status`, `ls state/threads`, `orca terminal list --json`, `pgrep -fl 'bun server.ts'`.
+
+생성 경로 기본값은 `state/launchd/`. 템플릿의 실제 설치 경로, PATH, 인증 원본 경로와 활성 역할을 반영한다. `manifest.json`에 이번 구성에 필요한 파일만 담긴다. 예전 생성 파일이 남아도 디렉터리 전체 glob을 등록하지 않는다.
+
+등록 예시 (기존 동일 이름 LaunchAgent가 없는 최초 설치):
+
+```sh
+python3 - <<'PY'
+import json, os, subprocess, sys
+from pathlib import Path
+sys.path.insert(0, str(Path('bin').resolve()))
+from config import runtime_paths
+folder = Path(runtime_paths()['STATE_DIR_ROOT']) / 'launchd'
+agents = Path.home() / 'Library/LaunchAgents'
+agents.mkdir(parents=True, exist_ok=True)
+files = [Path(p) for p in json.loads((folder / 'manifest.json').read_text())]
+for p in files:
+    dest = agents / p.name
+    if dest.exists() or dest.is_symlink():
+        raise SystemExit(f'기존 등록 확인 필요: {dest}')
+for p in files:
+    dest = agents / p.name
+    dest.symlink_to(p)
+    subprocess.run(['launchctl', 'bootstrap', f'gui/{os.getuid()}', str(dest)], check=True)
+PY
+```
+
+| job | 동작 |
+|---|---|
+| `ai.orca.leads-check` | 5분마다 활성 상담역·접수원 복구 및 켜 둔 비전 재개 |
+| `ai.orca.접수원-restart` | 매일 04:00 접수원 새 세션 |
+| `ai.orca.sweep` | 5분마다 작업 정리 |
+| `ai.orca.jarvis` | 로그인 시 기동, 비정상 종료 시 재기동 |
+
+```sh
+launchctl print "gui/$(id -u)/ai.orca.jarvis"
+launchctl kickstart -k "gui/$(id -u)/ai.orca.jarvis"
+# 해제 / 파일 수정 후 재등록할 때 (대상 label을 정확히 지정)
+launchctl bootout "gui/$(id -u)/ai.orca.jarvis"
+```
+
+역할을 영구적으로 끄면 해당 LaunchAgents symlink도 제거해야 다음 로그인 때 기동되지 않는다. 이미 켜진 Claude 봇은 감시 job 해제만으로 종료되지 않는다. 로그는 `<STATE_DIR_ROOT>/log/`에 있다. 재부팅 후 마크의 이전 Claude 세션을 자동 복원하지는 않는다.
+
+## sweep 자식 프로세스 유지
+
+`launchd/ai.orca.sweep.plist`에는 `AbandonProcessGroup=true`를 유지한다. sweep가 종료된 뒤에도 대기열 재시도용 자식 프로세스가 launchd의 프로세스 그룹 정리로 종료되지 않도록 하는 설정이다.
+
+변경 시 `python3 bin/setup.py launchd`로 생성하고, sweep가 실행 중이 아닌지 확인한 다음 `ai.orca.sweep`만 bootout/bootstrap한다. 생성기는 현재 셸의 PATH와 실행 파일 경로를 반영하므로 기존 등록 환경을 보존하고 다른 job의 생성 파일이 달라지지 않았는지 확인한다.
+
+```sh
+launchctl bootout "gui/$(id -u)/ai.orca.sweep"
+launchctl bootstrap "gui/$(id -u)" "$PWD/state/launchd/ai.orca.sweep.plist"
+launchctl print "gui/$(id -u)/ai.orca.sweep"
+```
+
+검증: 템플릿과 생성 plist의 boolean 값이 true이고 `plutil -lint`가 통과해야 한다. 실제 launchctl 출력의 `properties = abandon process group | inferred program`도 적용 증거다 (`abandon process group = 1` 형식만 기대하지 않는다). 이번 적용에서는 이 런타임 속성과 300초 주기, 다른 생성 파일 불변을 확인했다. 실제 새 요청의 queued → 자동 시작 시나리오는 별도 검증 대상이며 설정 적용만으로 성공했다고 간주하지 않는다.
+
+## 테스트
+
+[README 검증 명령](../README.md#구현과-검증)으로 정적·로컬 테스트를 실행한다. 실제 적용 확인은 [최초 사용 확인](SETUP.ko.md#최초-사용-확인)을 따른다. 테스트의 모의 Orca가 실제 앱·Discord·계정 호환성까지 보장하지는 않는다.
