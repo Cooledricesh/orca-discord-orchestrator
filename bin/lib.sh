@@ -181,14 +181,17 @@ orca_ok() { orca status --json >/dev/null 2>&1; }
 
 # 상시 세션의 Orca 터미널 제목. 생성(lead-up.sh)과 재시작 검사(model-restart.sh)가 같은 기준을 쓰도록 여기 한 곳에서 만든다.
 lead_title() { print -r -- "$1"; }
-# terminal_is <핸들> <기대 제목>  → 이 설치에서 띄운 Claude 터미널이면 0. 모델 변경 재시작 전 신원 확인용.
+# terminal_is <핸들> <역할> → 시작 제목과 Claude가 갱신하는 봇 제목 모두 확인.
 terminal_is() {
-  local info
+  local info bot
   info="$(orca terminal show --terminal "$1" --json)" || return 1
-  print -r -- "$info" | python3 -c 'import json,os,sys
+  bot="$(route_get "[\"bots\"][\"$2\"]" 2>/dev/null || true)"
+  print -r -- "$info" | python3 -c 'import json,os,re,sys
 t = json.load(sys.stdin)["result"]["terminal"]
 same = os.path.realpath(t.get("worktreePath") or "") == os.path.realpath(sys.argv[1])
-sys.exit(0 if t.get("agentIdentity") == "claude" and same and t.get("title") == sys.argv[2] else 1)' "$ORCH_ROOT" "$2"
+title = re.sub(r"^[^\w]+", "", t.get("title") or "").strip()
+expected = {v for v in sys.argv[2:] if v}
+sys.exit(0 if t.get("agentIdentity") == "claude" and same and title in expected else 1)' "$ORCH_ROOT" "$2" "$bot"
 }
 json_get() { python3 -c '
 import json,sys

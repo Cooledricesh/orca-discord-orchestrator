@@ -26,6 +26,27 @@
 
 ## 설정 변경
 
+### Discord에서 운영 적용
+
+프라이데이 또는 오케스트레이터 프로젝트의 마크가 [운영 적용 절차](../roles/운영-적용.md)를 따른다. 소유자가 운영 장애 해결을 요청하면 적용까지 수행하며, 검토만 요청했을 때는 적용하지 않는다. 임의 셸 문자열을 실행하는 Discord 명령은 추가하지 않는다.
+
+```sh
+python3 bin/operations.py plan --thread <작업스레드ID>
+python3 bin/operations.py plan --restart 상담역 --chat <결과를받을채널ID>
+python3 bin/operations.py plan --launchd sweep --chat <결과를받을채널ID>
+python3 bin/operations.py apply <계획ID>
+python3 bin/operations.py status [계획ID]
+python3 bin/operations.py retry <실패한계획ID>
+```
+
+계획은 운영·작업 커밋, 브랜치, 설정 지문과 적용 대상을 고정한다. dirty checkout, 다른 프로젝트, 분기된 커밋은 거부한다. 작업 worktree에서 전체 Python/Bun 테스트와 타입/셸 검사를 통과하고 상태를 재확인한 뒤 운영 브랜치를 fast-forward한다. `refs/operations/<id>`에 이전 커밋을 남긴다. 자동 reset/강제 병합/작업 폴더 삭제는 하지 않는다.
+
+실행기는 별도 프로세스와 저장된 코드 복사본으로 동작하므로 자기 재시작이나 운영 코드 교체로 끊기지 않는다. `state/operations/<id>/job.json`에 단계·반영 여부·결과, `apply.log`에 검증 로그, `backup/`에 이전 plist를 저장한다. 중복 적용은 거부한다. 코드 반영 후 재시작 실패는 `promoted: true, status: failed`이며 같은 계획을 retry하면 완료 단계를 반복하지 않는다. 커밋이나 설정이 달라졌으면 새 계획이 필요하다. 코드 롤백은 기록된 이전 커밋을 참고해 revert 커밋으로 만들어 같은 절차로 적용한다.
+
+launchd는 지정한 기존 job만 재등록하고 설치된 환경변수를 보존한다. 실행 중인 sweep/감시 job은 중단하지 않는다. 재등록 검증 실패 시 기존 plist와 등록 복원을 시도한다. `--chat` 또는 작업 스레드가 있으면 결과를 그 대화에 보고하며, 전송 실패도 `reported: false`로 남는다. 상태 확인은 모델 응답·사용량 복구까지 보장하지 않는다. 기존 마크는 강제 재시작하지 않고 새 작업부터 갱신된 지침/플러그인을 사용한다.
+
+### 기존 설정 작업
+
 - 새 프로젝트: Git 기준 커밋 확인 → Orca 등록 → routes 추가 → 접수원과 자비스 재시작. [상담역 온보딩](../roles/상담역-온보딩.md) 참고.
 - 모델·역할·env 변경: 상시 Claude는 재기동, 마크는 다음 스폰, 자비스는 restart. 자비스의 기존 Codex resume 세션에는 이전 지침이 남을 수 있다.
 - 비전 설정 변경: `stop` 후 `fresh` 또는 `resume`.

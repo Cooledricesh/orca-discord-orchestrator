@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Only called after an owner-confirmed model change. Restart exactly one role.
+# Called for an owner-authorized model or operations change. Restart one role.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 role="${1:-}"

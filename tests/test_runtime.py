@@ -154,8 +154,20 @@ class RuntimeTests(unittest.TestCase):
             ).returncode
 
         self.assertEqual(identity(created_title), 0)
-        self.assertNotEqual(identity(bot), 0)
+        self.assertEqual(identity(bot), 0)
+        self.assertEqual(identity("✳ " + bot), 0)
+        self.assertNotEqual(identity("✳ 프라이데이"), 0)
         self.assertNotEqual(identity("접수원 (다른 설치)"), 0)
+
+    def test_dirty_orchestrator_does_not_spawn_from_stale_head(self):
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        subprocess.run(["git", "-C", str(self.root), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "init"], check=True)
+        self.cfg["routes"][CHANNEL]["path"] = str(self.root)
+        self.save_config()
+        result = self.command("spawn-worker.sh", CHANNEL, THREAD, "--dry-run")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("미커밋 변경", result.stderr)
+        self.assertEqual(self.calls(), [])
 
     def test_lead_model_effort_reaches_cli(self):
         self.cfg["models"]["상담역Effort"] = "high"

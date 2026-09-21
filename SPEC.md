@@ -37,6 +37,12 @@ Claude 플러그인은 `access.json`의 소유자 allowlist와 채널 목록에 
 
 `setup.py doctor`는 파일·도구·로그인·Orca 등록을 검사한다. Discord 접속과 실제 모델 실행은 검사하지 않는다. `init`과 `bot-env`는 기존 파일을 덮어쓰지 않는다. 두 dry-run과 pool status는 런타임 상태를 변경하지 않는다.
 
+## 오케스트레이터 운영 적용
+
+오케스트레이터 자신을 routes 프로젝트로 등록한 경우, 프라이데이는 운영 요청을 해당 프로젝트로 전달하고 마크는 `roles/운영-적용.md`를 따라 수정부터 운영 확인까지 처리한다. 기존 역할의 원본 쓰기 제한에는 운영본의 `bin/operations.py` 호출만 예외로 둔다. 직접 원본 편집이나 임의 셸 명령을 허용하는 새 Discord API가 아니다.
+
+`operations.py plan`은 등록부의 worktree를 운영 저장소와 대조하고 커밋·설정·적용 대상을 고정한다. `apply`는 분리 프로세스에서 로컬 검증 후 fast-forward, 의존성 설치, 선택한 launchd 갱신과 봇 재시작을 수행한다. 작업 상태와 로그는 state/operations에 영속화한다. 운영본/작업본이 바뀌면 거부하고 실패한 적용은 완료 단계와 코드 반영 여부를 보존한다. `retry`와 `status`로 같은 대화에서 복구·확인이 가능하다. 진행 중인 마크는 유지한다.
+
 ## 검수와 독립 Codex
 
 자비스는 스레드 이력, 등록부의 worktree path/baseRef, git 상태를 Codex에 전달한다. 기본 검수 동시 실행 수는 1이다. 새 채널/신뢰 봇 설정은 데몬 재시작이 필요하다. Codex 홈은 `<STATE_DIR_ROOT>/jarvis/codex-home`이며 원본 인증 파일을 최초 한 번, 또는 명시적 reauth 때 복사한다. 개인 Codex 설정 전체를 복사하지 않고 읽기 전용·approval never 설정을 만든다.

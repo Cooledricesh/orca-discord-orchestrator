@@ -40,6 +40,9 @@ proj_path="$(project_path_of "$channel")"
 [[ -d "$proj_path" ]] || die "프로젝트 경로 없음: $proj_path"
 proj_path="${proj_path:A}"
 source_ref="$(git -C "$proj_path" rev-parse HEAD 2>/dev/null)" || die "프로젝트에 Git 기준 커밋이 필요합니다: $proj_path"
+if (( ! resume )) && [[ "$proj_path" == "${ORCH_ROOT:A}" ]] && [[ -n "$(git -C "$proj_path" status --porcelain --untracked-files=normal)" ]]; then
+  die "오케스트레이터 운영본에 미커밋 변경이 있습니다. 변경을 검토·커밋한 뒤 새 작업을 요청하세요. 오래된 HEAD로 시작하지 않습니다."
+fi
 write_dir="$(route_get "[\"routes\"][\"$channel\"][\"writeDir\"]" 2>/dev/null || true)"
 owner="$(owner_id)"; guild="$(guild_id)"; plugin="$(channel_args)"
 model="${sel_model:-$(route_get '["models"]["작업자"]')}"; effort="${sel_effort:-$(route_get '["models"]["작업자Effort"]')}"
