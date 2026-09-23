@@ -127,6 +127,14 @@ class ModelControlTests(unittest.TestCase):
         self.assertEqual(self.state()["job"]["status"], "failed")
         self.assertIn("재시작을 확인하지 못", notify.call_args.args[1])
 
+    def test_failed_restart_reports_last_stderr_line(self):
+        code = self.propose("!모델 해피 opus high"); self.confirm(code)
+        stderr = "noise\n[model-restart.sh] ERROR: terminal identity mismatch: worktreePath None != ORCH_ROOT\n"
+        with patch.object(control.subprocess, "run", return_value=Mock(returncode=1, stderr=stderr)), patch.object(control, "notify") as notify:
+            control.apply_job(code)
+        self.assertIn("원인: [model-restart.sh] ERROR: terminal identity mismatch", notify.call_args.args[1])
+        self.assertNotIn("noise", self.state()["job"]["result"])
+
     def test_jarvis_revision_resets_next_conversation(self):
         code = self.propose("!모델 자비스 gpt-6-astra xhigh"); self.confirm(code)
         with patch.object(control.subprocess, "run", return_value=Mock(returncode=0)), patch.object(control, "notify"):

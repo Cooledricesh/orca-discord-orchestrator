@@ -11,7 +11,8 @@ case "$role" in
     # Refuse an unresolvable handle before stopping the recorded Claude PID.
     if pid_is "$p" claude; then
       [[ "$h" == term_* ]] || die "missing terminal handle"
-      terminal_is "$h" "$(lead_title "$role")" || die "terminal identity mismatch"
+      why="$(terminal_is "$h" "$(lead_title "$role")" "$p" 2>&1 >/dev/null)" \
+        || die "terminal identity mismatch: ${${why##*$'\n'}#\[terminal_is\] }"
       kill -TERM "$p"
       for i in {1..20}; do pid_is "$p" claude || break; sleep 0.25; done
       pid_is "$p" claude && die "Claude did not stop"

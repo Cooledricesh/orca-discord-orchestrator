@@ -181,17 +181,33 @@ orca_ok() { orca status --json >/dev/null 2>&1; }
 
 # 상시 세션의 Orca 터미널 제목. 생성(lead-up.sh)과 재시작 검사(model-restart.sh)가 같은 기준을 쓰도록 여기 한 곳에서 만든다.
 lead_title() { print -r -- "$1"; }
-# terminal_is <핸들> <역할> → 시작 제목과 Claude가 갱신하는 봇 제목 모두 확인.
+# terminal_is <핸들> <역할> [claude pid] → 시작 제목과 Claude가 갱신하는 봇 제목 모두 확인.
+# 제목이 비어 있으면(orphaned) pid가 주어졌을 때만 그 claude 프로세스의 --name 으로 대신 확인한다. 실패 이유는 stderr.
 terminal_is() {
-  local info bot
-  info="$(orca terminal show --terminal "$1" --json)" || return 1
+  local info bot cmd=""
+  info="$(orca terminal show --terminal "$1" --json)" || { log "terminal show failed: $1"; return 1; }
   bot="$(route_get "[\"bots\"][\"$2\"]" 2>/dev/null || true)"
+  [[ -z "${3:-}" ]] || cmd="$(ps -o command= -p "$3" 2>/dev/null || true)"
   print -r -- "$info" | python3 -c 'import json,os,re,sys
 t = json.load(sys.stdin)["result"]["terminal"]
-same = os.path.realpath(t.get("worktreePath") or "") == os.path.realpath(sys.argv[1])
+root, role, bot, cmd = sys.argv[1:5]
+def fail(reason):
+    print("[terminal_is] " + reason, file=sys.stderr); sys.exit(1)
+if t.get("agentIdentity") != "claude":
+    fail("agentIdentity is %r, not claude" % t.get("agentIdentity"))
+if os.path.realpath(t.get("worktreePath") or "") != os.path.realpath(root):
+    fail("worktreePath %r != ORCH_ROOT" % t.get("worktreePath"))
 title = re.sub(r"^[^\w]+", "", t.get("title") or "").strip()
-expected = {v for v in sys.argv[2:] if v}
-sys.exit(0 if t.get("agentIdentity") == "claude" and same and title in expected else 1)' "$ORCH_ROOT" "$2" "$bot"
+if title:
+    if title not in {role, bot} - {""}:
+        fail("title %r is not %r" % (title, bot or role))
+    sys.exit(0)
+if not cmd:
+    fail("title is empty and recorded claude pid is not running")
+argv = cmd.split()
+named = any(a == "--name" and b == bot for a, b in zip(argv, argv[1:]))
+if not bot or "claude" not in cmd or not named:
+    fail("title is empty and pid command lacks claude --name %s" % bot)' "$ORCH_ROOT" "$2" "$bot" "$cmd"
 }
 json_get() { python3 -c '
 import json,sys

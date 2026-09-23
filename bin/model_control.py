@@ -196,17 +196,19 @@ def apply_job(code):
             if job["role"] != "작업자":
                 command = ["zsh", str(root_path() / "bin/model-restart.sh"), job["role"]]
                 result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                        stderr=subprocess.DEVNULL, timeout=180, check=False)
+                                        stderr=subprocess.PIPE, text=True, timeout=180, check=False)
                 if result.returncode:
-                    raise RuntimeError("restart failed")
+                    lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
+                    raise RuntimeError(lines[-1][:300] if lines else "restart failed")
             status = "done"
             message = ("✅ 모델 설정 적용: " + job["role"] + " → " + (job["model"] or "CLI 기본값")
                        + " / " + (job["effort"] or "CLI 기본 effort") + "\n"
                        + ("다음 새 작업부터 적용됩니다. 기존 작업/대기열/재개 세션은 유지합니다." if job["role"] == "작업자"
                           else "봇 프로세스 재시작을 확인했습니다. 모델 응답 성공·사용량 복구까지 확인한 것은 아닙니다."))
-        except Exception:
+        except Exception as error:
             status = "failed"
-            message = "⚠️ 모델 설정은 저장됐지만 봇 재시작을 확인하지 못했습니다. `!모델`로 확인하고 같은 설정으로 다시 변경을 요청할 수 있습니다."
+            message = ("⚠️ 모델 설정은 저장됐지만 봇 재시작을 확인하지 못했습니다. `!모델`로 확인하고 같은 설정으로 다시 변경을 요청할 수 있습니다."
+                       + ("\n원인: " + str(error) if isinstance(error, RuntimeError) else ""))
         with open(directory() / "lock", "a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             state = read_json(directory() / "state.json")
