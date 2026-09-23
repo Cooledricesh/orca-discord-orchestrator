@@ -163,21 +163,30 @@ class RuntimeTests(unittest.TestCase):
     def test_model_restart_identifies_untitled_terminal_by_claude_pid(self):
         """orphaned 터미널은 제목이 없으므로 기록된 claude PID의 --name 과 worktree로 식별한다."""
         bot = self.cfg["bots"]["상담역"]
-        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", "claude", "--name", bot])
-        self.addCleanup(proc.wait)
-        self.addCleanup(proc.kill)
+        def sleeper(name):
+            script = self.area / name
+            script.write_text("import time; time.sleep(30)\n")
+            proc = subprocess.Popen([sys.executable, str(script), "--name", bot])
+            self.addCleanup(proc.wait)
+            self.addCleanup(proc.kill)
+            return str(proc.pid)
 
-        def identity(worktree, pid):
-            record = json.dumps({"agentIdentity": "claude", "worktreePath": worktree, "title": None, "orphaned": True})
+        claude, impostor = sleeper("claude"), sleeper("notclaude")
+
+        def identity(worktree, pid, title=None):
+            record = json.dumps({"agentIdentity": "claude", "worktreePath": worktree, "title": title, "orphaned": True})
             return subprocess.run(
                 ["zsh", "-c", 'source "$1"; terminal_is term_test "$(lead_title "$2")" "$3"', "test", str(self.root / "bin/lib.sh"), "상담역", pid],
                 env=dict(self.env, TEST_TERMINAL_JSON=record), capture_output=True, text=True, timeout=10,
             )
 
-        self.assertEqual(identity(str(self.root), str(proc.pid)).returncode, 0)
-        rejected = identity(str(self.area), str(proc.pid))
+        self.assertEqual(identity(str(self.root), claude).returncode, 0)
+        rejected = identity(str(self.area), claude)
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("worktreePath", rejected.stderr)
+        self.assertNotEqual(identity("", claude).returncode, 0)
+        self.assertNotEqual(identity(str(self.root), impostor).returncode, 0)
+        self.assertNotEqual(identity(str(self.root), claude, "✳").returncode, 0)
         self.assertNotEqual(identity(str(self.root), "").returncode, 0)
 
     def test_dirty_orchestrator_does_not_spawn_from_stale_head(self):

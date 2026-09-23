@@ -134,6 +134,7 @@ class ModelControlTests(unittest.TestCase):
             control.apply_job(code)
         self.assertIn("원인: [model-restart.sh] ERROR: terminal identity mismatch", notify.call_args.args[1])
         self.assertNotIn("noise", self.state()["job"]["result"])
+        self.assertEqual(control.restart_reason("DISCORD_BOT_TOKEN=secret"), "restart failed")
 
     def test_jarvis_revision_resets_next_conversation(self):
         code = self.propose("!모델 자비스 gpt-6-astra xhigh"); self.confirm(code)

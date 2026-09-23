@@ -164,6 +164,14 @@ def notify(chat, text):
         response.read()
 
 
+def restart_reason(stderr):
+    # Only our own `[script] ERROR:` log line; child tool output could carry secrets.
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    if not lines or not re.fullmatch(r"\[[\w.-]+\] ERROR: [^\n]{1,300}", lines[-1][:320]):
+        return "restart failed"
+    return re.sub(r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}", "<redacted>", lines[-1][:300])
+
+
 def apply_job(code):
     # This process is detached before a self-restart can kill the Discord plugin.
     with open(directory() / "apply.lock", "a") as apply_lock:
@@ -198,8 +206,7 @@ def apply_job(code):
                 result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                         stderr=subprocess.PIPE, text=True, timeout=180, check=False)
                 if result.returncode:
-                    lines = [line.strip() for line in (result.stderr or "").splitlines() if line.strip()]
-                    raise RuntimeError(lines[-1][:300] if lines else "restart failed")
+                    raise RuntimeError(restart_reason(result.stderr))
             status = "done"
             message = ("✅ 모델 설정 적용: " + job["role"] + " → " + (job["model"] or "CLI 기본값")
                        + " / " + (job["effort"] or "CLI 기본 effort") + "\n"

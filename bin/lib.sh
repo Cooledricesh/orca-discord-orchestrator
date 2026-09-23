@@ -195,19 +195,21 @@ def fail(reason):
     print("[terminal_is] " + reason, file=sys.stderr); sys.exit(1)
 if t.get("agentIdentity") != "claude":
     fail("agentIdentity is %r, not claude" % t.get("agentIdentity"))
-if os.path.realpath(t.get("worktreePath") or "") != os.path.realpath(root):
-    fail("worktreePath %r != ORCH_ROOT" % t.get("worktreePath"))
-title = re.sub(r"^[^\w]+", "", t.get("title") or "").strip()
-if title:
+path = t.get("worktreePath") or ""
+if not path or os.path.realpath(path) != os.path.realpath(root):
+    fail("worktreePath %r != ORCH_ROOT" % path)
+raw = (t.get("title") or "").strip()
+if raw:
+    title = re.sub(r"^[^\w]+", "", raw).strip()
     if title not in {role, bot} - {""}:
-        fail("title %r is not %r" % (title, bot or role))
+        fail("title %r is not %r" % (raw, bot or role))
     sys.exit(0)
 if not cmd:
     fail("title is empty and recorded claude pid is not running")
 argv = cmd.split()
 named = any(a == "--name" and b == bot for a, b in zip(argv, argv[1:]))
-if not bot or "claude" not in cmd or not named:
-    fail("title is empty and pid command lacks claude --name %s" % bot)' "$ORCH_ROOT" "$2" "$bot" "$cmd"
+if not bot or not any(os.path.basename(a) == "claude" for a in argv[:2]) or not named:
+    fail("title is empty and pid command is not claude --name %s" % bot)' "$ORCH_ROOT" "$2" "$bot" "$cmd"
 }
 json_get() { python3 -c '
 import json,sys
