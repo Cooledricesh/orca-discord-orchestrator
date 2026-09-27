@@ -1,6 +1,6 @@
 /** Grok worker bridge (design §5): one bot in one thread ↔ one grok session, one `grok -p` process per turn.
  * Started by spawn-worker.sh: `exec bun grok-worker/bridge.ts <THREADS_DIR>/<tid>.json`. finish-worker.sh TERMs it. */
-import { Client, Events, GatewayIntentBits, type Message } from 'discord.js'
+import { Client, EmbedBuilder, Events, GatewayIntentBits, type Message } from 'discord.js'
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
@@ -11,6 +11,7 @@ import { downloadAttachment, readBotToken, sendChunked } from '../bridge-kit/dis
 import { ProgressCard, keepTyping, type ProgressRef } from '../bridge-kit/progress.ts'
 import { grokArgs, grokEnv } from './args.ts'
 import { buildIsolatedHome } from './home.ts'
+import { postsResult, usageLine } from './usage.ts'
 import { GrokRun, classify, exitLabel, nextTurn, patchJSON, pruneTurns, writeJSONAtomic } from './turn.ts'
 
 type Registry = { threadId?: string; guildId: string; ownerUserId: string; jarvisAppId?: string; bot: string; path: string; promptFile: string
@@ -114,9 +115,10 @@ async function turn(input: string, startup: boolean, recovery = false): Promise<
     model: record.model, effort: record.effort, sandbox: record.sandbox })
   console.log(`▶ 턴 ${n}${startup ? ' (기동)' : ''} ${resume ? '--resume' : '--session-id'} ${record.sessionId}`)
   const stopTyping = keepTyping(async () => (await thread()).sendTyping())
+  const turnStart = Date.now(); let resultCard = false
   const run = current = new GrokRun({ bin: process.env.GROK_BIN || 'grok', args, env, cwd: record.path, logFile: `${base}.ndjson`, errFile: `${base}.err`,
     noOutputMs: NO_OUTPUT_MS, onOutput: () => activity(),
-    onEvent: e => { if (e.kind === 'tool') { currentTool = e.desc; console.log(`· ${e.name}`); void card.step(tid, e.desc) } } })
+    onEvent: e => { if (e.kind === 'tool') { currentTool = e.desc; resultCard ||= postsResult(e.name, e.desc); console.log(`· ${e.name}`); void card.step(tid, e.desc) } } })
   const r = await run.result
   current = undefined; stopTyping(); await card.end(); pruneTurns(rt)
   if (closing) return   // SIGTERM from finish-worker: no failure notice for the group we just killed
@@ -129,6 +131,7 @@ async function turn(input: string, startup: boolean, recovery = false): Promise<
     case 'ok':
       failStreak = 0; if (runtime.status !== 'ready') setStatus('ready')
       if (o.text) try { await sendChunked(await thread(), o.text, { users }) } catch (e) { console.error(`답 게시 실패: ${errMsg(e)}`) }
+      if (resultCard) await appendUsage(turnStart)
       return
     case 'interrupted': return   // 중단 posts its own status
     case 'timeout': return say('⚠️ 60분 동안 출력이 없어 중단했습니다.')
@@ -157,6 +160,21 @@ async function turn(input: string, startup: boolean, recovery = false): Promise<
   failStreak++
   await say(`❌ Grok 실행 실패 (exit ${exitLabel(r)}): ${o.kind === 'failed' && o.detail ? o.detail : o.kind}`)
   if (failStreak === 3) opsLog(`❌ ${record.bot} Grok 실행 3회 연속 실패 (${tid})`)
+}
+/** Session usage is persisted only after the turn ends: append it to the result card this turn posted (design §7). */
+async function appendUsage(since: number) {
+  try {
+    const p = Bun.spawn([process.env.GROK_BIN || 'grok', 'usage', record.sessionId], { env, cwd: record.path, stdout: 'pipe', stderr: 'ignore', stdin: 'ignore' })
+    const timer = setTimeout(() => p.kill(), 20_000)
+    const line = usageLine(await new Response(p.stdout).text()); clearTimeout(timer)
+    if (!line) return
+    const msgs = await (await thread()).messages.fetch({ limit: 20 })
+    const card: any = [...msgs.values()].find((m: any) => m.author.id === discord.user?.id && m.embeds.length && m.createdTimestamp >= since - 5000)
+    if (!card) return
+    const embed = EmbedBuilder.from(card.embeds[0])
+    embed.setDescription(`${(card.embeds[0].description ?? '').slice(0, 4000 - line.length)}\n\n${line}`)
+    await card.edit({ embeds: [embed, ...card.embeds.slice(1)], allowedMentions: { parse: [] } })
+  } catch (e) { console.error(`usage 추가 실패: ${errMsg(e)}`) }
 }
 function readPrevious(): string[] { try { const v = JSON.parse(readFileSync(registryFile, 'utf8')).previousSessionIds; return Array.isArray(v) ? v : [] } catch { return [] } }
 const elapsed = (ms: number) => { const s = Math.round(ms / 1000); return s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초` }

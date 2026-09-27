@@ -6,12 +6,10 @@ thread="$1"; outcome="$2"; title="$3"; body="$4"; files="${5:-}"
 bot="$(registry_get "$thread" bot)"; [[ -n "$bot" ]] || die "등록부에 bot 없음: $thread"
 color=$([[ "$outcome" == succeeded ]] && print 3066993 || print 15158332)
 owner="$(owner_id)"
-# 그록: 카드 본문 끝에 grok usage 한 줄. 실패해도 카드는 보낸다.
-usage=""; [[ "$(registry_engine "$thread")" != grok ]] || usage="$(grok_usage_line "$(registry_get "$thread" sessionId)" 2>/dev/null || true)"
-payload="$(python3 - "$title" "$body" "$files" "$color" "$bot" "$owner" "$usage" <<'PY'
+# 그록의 usage 한 줄은 턴이 끝난 뒤 브리지가 이 카드에 덧붙인다 (grok usage 는 턴 종료 후에 저장된다).
+payload="$(python3 - "$title" "$body" "$files" "$color" "$bot" "$owner" <<'PY'
 import json,sys,datetime
-title,body,files,color,bot,owner,usage=sys.argv[1:8]
-if usage: body = body[:4000 - len(usage) - 2] + "\n\n" + usage
+title,body,files,color,bot,owner=sys.argv[1:7]
 fields=[]
 if files.strip(): fields.append({"name":"수정 파일","value":"\n".join("`"+f.strip()+"`" for f in files.splitlines() if f.strip())[:1024]})
 print(json.dumps({"content":f"<@{owner}>","allowed_mentions":{"users":[owner]},

@@ -63,7 +63,7 @@
 | `bin/finish-worker.sh` | kill 대상은 `pid_is "$pid" claude` 대신 엔진별 패턴(grok은 `grok-worker/bridge.ts`, 브리지가 자식 grok 프로세스 그룹을 정리). 대기열은 **반납된 봇과 같은 엔진**의 queued 중 첫 건만 스폰. grok이면 `grok usage` 한 줄을 runs 로그에 남긴다 |
 | `bin/stop-worker.sh`, `bin/sweep.sh` | 변경 없음. 브리지가 메시지를 받을 때 activity 파일을 갱신하고, 턴 중에는 터미널에 로그를 찍으므로 `lastOutputAt`이 갱신된다 |
 | `bin/status.sh` | 작업자 줄은 엔진별로 판정한다. grok은 pid(`bridge.ts`) + 런타임 파일 `status`(ready/auth_failed 등)를 보고 `✅/⛔/❌`를 표시하고 엔진 표기(`그록1 [grok]`)를 붙인다 |
-| `bin/post-result.sh` | 등록부 `engine=grok`이면 카드 본문 끝에 `grok usage` 한 줄(`토큰 in 174k · out 2.2k · $0.049 · grok-4.7-build`) 추가. 실패해도 카드는 보낸다 |
+| `bin/post-result.sh` | 변경 없음. `grok usage`는 턴이 끝난 뒤에야 저장되므로(E2E에서 확인: 턴 중 호출은 빈 결과) usage 한 줄은 **브리지가 턴 종료 후 그 턴의 결과 카드에 덧붙인다**(`grok-worker/usage.ts`) |
 | `bin/setup.py` | 스키마 검증은 `config.worker_entries`로 한다. `doctor`: grok 작업자가 있으면 `grok` 실행 파일과 `grok models` 첫 줄의 로그인 상태, `bun`, `grok-worker/node_modules`를 확인한다(토큰·auth.json은 읽지 않는다). `bot-env`/`invites`는 이름 기반으로 동작하며 권한은 작업자와 같다 |
 | `bin/model_control.py` | 하드코딩된 `ROLES` 중 작업자 봇은 `worker_entries`에서 만든다. grok 봇의 `!모델 그록1 <m> [effort]`는 `grok models` 목록 안의 모델만 허용하고 `models.grok작업자(Effort)`를 바꾼다(마크가 `작업자`를 바꾸는 것과 대칭, 다음 새 작업부터 적용). Claude 봇에 grok 모델, grok 봇에 Claude 모델은 거부 |
 | `bin/operations.py` | `notify()`의 `allowed`가 `workers`를 그대로 펼친다. dict 항목이 되면 **모든 작업자 봇의 결과 통지가 조용히 거부된다**. `worker_entries` 이름으로 교체 |
@@ -164,7 +164,7 @@ finish-worker.sh ─ 등록부·풀·STATE_DIR 정리 → orca terminal close �
 ## 7. 관측
 - `pool.sh status`: `그록1  grok  <tid>  <since>`, 엔진별 합계.
 - `status.sh`: `✅ 그록1 [grok] — project · title`, 로그인 만료는 ⛔.
-- 결과 카드 끝의 한 줄: `grok usage` → `토큰 입력 174k(캐시 145k) · 출력 2.2k · 추론 1.4k · $0.049 · grok-4.7-build · 2턴`. grok.com 구독 인증에서 `$`는 API 환산값이며 실제 청구액이 아니다. 카드에 `(환산)`으로 표기한다.
+- 결과 카드 끝의 한 줄(결과 카드를 올린 턴이 끝나면 브리지가 카드 본문에 덧붙임): `grok usage` → `토큰 입력 174k(캐시 145k) · 출력 2.2k · 추론 1.4k · $0.049 · grok-4.7-build · 2턴`. grok.com 구독 인증에서 `$`는 API 환산값이며 실제 청구액이 아니다. 카드에 `(환산)`으로 표기한다.
 
 ## 8. 문서
 - `SPEC.md`: 1절 엔진 문장과 역할 표에 "작업자(Grok) — 배정 스레드의 소유자 입력 — 스레드별 grok 세션(브리지) + 별도 worktree" 추가. 봇 하나 = 엔진 하나 원칙 유지(엔진은 봇 항목에 고정, `!모델`로 엔진은 못 바꾼다).
