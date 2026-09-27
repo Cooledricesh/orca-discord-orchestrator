@@ -219,8 +219,10 @@ t = json.load(sys.stdin)["result"]["terminal"]
 root, role, bot, cmd = sys.argv[1:5]
 def fail(reason):
     print("[terminal_is] " + reason, file=sys.stderr); sys.exit(1)
-if t.get("agentIdentity") != "claude":
-    fail("agentIdentity is %r, not claude" % t.get("agentIdentity"))
+# Orca may omit agentIdentity; then the title alone is not enough and the recorded claude pid must match.
+ident = t.get("agentIdentity")
+if ident is not None and ident != "claude":
+    fail("agentIdentity is %r, not claude" % ident)
 path = t.get("worktreePath") or ""
 if not path or os.path.realpath(path) != os.path.realpath(root):
     fail("worktreePath %r != ORCH_ROOT" % path)
@@ -229,13 +231,15 @@ if raw:
     title = re.sub(r"^[^\w]+", "", raw).strip()
     if title not in {role, bot} - {""}:
         fail("title %r is not %r" % (raw, bot or role))
-    sys.exit(0)
+    if ident == "claude":
+        sys.exit(0)
+why = "agentIdentity is missing" if raw else "title is empty"
 if not cmd:
-    fail("title is empty and recorded claude pid is not running")
+    fail(why + " and recorded claude pid is not running")
 argv = cmd.split()
 named = any(a == "--name" and b == bot for a, b in zip(argv, argv[1:]))
 if not bot or not any(os.path.basename(a) == "claude" for a in argv[:2]) or not named:
-    fail("title is empty and pid command is not claude --name %s" % bot)' "$ORCH_ROOT" "$2" "$bot" "$cmd"
+    fail(why + " and pid command is not claude --name %s" % bot)' "$ORCH_ROOT" "$2" "$bot" "$cmd"
 }
 json_get() { python3 -c '
 import json,sys

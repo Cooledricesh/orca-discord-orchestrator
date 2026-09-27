@@ -174,8 +174,8 @@ class RuntimeTests(unittest.TestCase):
 
         claude, impostor = sleeper("claude"), sleeper("notclaude")
 
-        def identity(worktree, pid, title=None):
-            record = json.dumps({"agentIdentity": "claude", "worktreePath": worktree, "title": title, "orphaned": True})
+        def identity(worktree, pid, title=None, agent="claude"):
+            record = json.dumps({"agentIdentity": agent, "worktreePath": worktree, "title": title, "orphaned": True})
             return subprocess.run(
                 ["zsh", "-c", 'source "$1"; terminal_is term_test "$(lead_title "$2")" "$3"', "test", str(self.root / "bin/lib.sh"), "상담역", pid],
                 env=dict(self.env, TEST_TERMINAL_JSON=record), capture_output=True, text=True, timeout=10,
@@ -189,6 +189,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotEqual(identity(str(self.root), impostor).returncode, 0)
         self.assertNotEqual(identity(str(self.root), claude, "✳").returncode, 0)
         self.assertNotEqual(identity(str(self.root), "").returncode, 0)
+        # Orca 가 agentIdentity 를 주지 않으면 제목이 맞아도 claude PID 로 확인한다.
+        self.assertEqual(identity(str(self.root), claude, None, None).returncode, 0)
+        self.assertEqual(identity(str(self.root), claude, "✳ " + bot, None).returncode, 0)
+        self.assertNotEqual(identity(str(self.root), impostor, "✳ " + bot, None).returncode, 0)
+        self.assertNotEqual(identity(str(self.root), "", "✳ " + bot, None).returncode, 0)
+        self.assertNotEqual(identity(str(self.root), claude, None, "codex").returncode, 0)
 
     def test_dirty_orchestrator_does_not_spawn_from_stale_head(self):
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
