@@ -15,7 +15,7 @@ import { postsResult, usageLine } from './usage.ts'
 import { GrokRun, classify, exitLabel, nextTurn, patchJSON, pruneTurns, writeJSONAtomic } from './turn.ts'
 
 type Registry = { threadId?: string; guildId: string; ownerUserId: string; jarvisAppId?: string; bot: string; path: string; promptFile: string
-  sessionId: string; model?: string; effort?: string; resumed?: boolean; discordStateDir: string; rolesFile: string; ackEmoji?: string; sandbox?: string }
+  sessionId: string; model?: string; effort?: string; resumed?: boolean; discordStateDir: string; rolesFile: string; ackEmoji?: string; sandbox?: string; taskTitle?: string }
 type Status = 'starting' | 'ready' | 'auth_failed' | 'degraded' | 'failed' | 'stopped'
 type Runtime = { pid: number; status: Status; sessionStarted: boolean; sessionId: string; updatedAt: number; lastError?: string; progress?: ProgressRef }
 
@@ -99,7 +99,10 @@ async function pump() {
   if (pumping) return; pumping = true
   try {
     while (queue.length && !finishing && !closing) {
-      if (queue[0].kind === 'startup') { queue.shift(); await turn(readFileSync(record.promptFile, 'utf8'), true); continue }
+      if (queue[0].kind === 'startup') {
+        queue.shift(); await say(record.resumed ? '▶ 재개' : `▶ 시작 — ${record.taskTitle || tid}`)
+        await turn(readFileSync(record.promptFile, 'utf8'), true); continue
+      }
       const texts = queue.splice(0).flatMap(i => i.kind === 'msg' ? [i.text] : [])
       await turn(texts.join('\n\n---\n\n'), false)
     }

@@ -152,6 +152,9 @@ prompt_file="$THREADS_DIR/$thread.prompt.md"
 scope_note=""; [[ -n "$write_dir" ]] && scope_note="- 쓰기 허용 범위: \`$work_path/$write_dir\` 아래만."
 finish_line="finish: \`$(shq "$ORCH_ROOT/bin/finish-worker.sh") $thread succeeded|failed|stopped\`"
 [[ "$engine" == claude ]] || finish_line="finish: 브리지가 처리한다 (\"종료\"·\"중단\"). 직접 호출하지 않는다."
+resume_first="스레드에 \`▶ 재개\` 라고 답하고 이어서 수행한다."; start_first="스레드에 \`▶ 시작 — $title\` 이라고 답하고 현재 요청대로 진행한다."
+# 그록은 턴의 최종 텍스트만 게시되므로 시작 표시는 브리지가 올린다.
+[[ "$engine" == claude ]] || { resume_first="\`▶ 재개\` 는 브리지가 이미 올렸다. 이어서 수행한다."; start_first="\`▶ 시작\` 은 브리지가 이미 올렸다. 현재 요청대로 진행한다."; }
 if (( resume )); then
 cat > "$prompt_file" <<EOF
 # 세션 재개
@@ -164,7 +167,7 @@ $scope_note
 ## 현재 사용자 요청
 ${request:-(없음. 필요한 지시는 스레드에서 사용자에게 확인한다.)}
 - requestMessageId: ${request_id:-(없음)}
-스레드에 \`▶ 재개\` 라고 답하고 이어서 수행한다.
+$resume_first
 EOF
 else
 cat > "$prompt_file" <<EOF
@@ -186,7 +189,7 @@ ${request:-(없음. 스레드에서 사용자에게 확인한다.)}
 - requestMessageId: ${request_id:-(없음)}
 
 ## 첫 행동
-스레드에 \`▶ 시작 — $title\` 이라고 답하고 현재 요청대로 진행한다. 요청에 적힌 파일 경로만 읽는다. 스레드 이력을 조회하지 않는다.
+$start_first 요청에 적힌 파일 경로만 읽는다. 스레드 이력을 조회하지 않는다.
 EOF
 fi
 
