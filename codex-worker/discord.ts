@@ -1,7 +1,6 @@
-import { assertPublicAttachment } from '../plugin/discord-orca/file-policy.ts'
 import { Client, GatewayIntentBits, type Message } from 'discord.js'
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
+import { assertFile, downloadAttachments, readBotToken, sendChunked } from '../bridge-kit/discord-io.ts'
 import { mentionsOtherBotOnly } from '../plugin/discord-orca/gate-helpers.ts'
 type DynamicToolSpec = { type: 'function'; name: string; description: string; inputSchema: Record<string, unknown>; deferLoading: boolean }
 /** Vision lounge: one channel plus its threads, one Codex session, owner messages only. */
@@ -20,12 +19,7 @@ export type DiscordConfig = { channel: string; guild: string; owner: string; sta
 export class DiscordPort {
   client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] })
   constructor(readonly cfg: DiscordConfig) {}
-  token(): string {
-    const env = readFileSync(join(this.cfg.stateDir, '.env'), 'utf8')
-    const token = /^DISCORD_BOT_TOKEN=(.*)$/m.exec(env)?.[1]?.trim().replace(/^['"]|['"]$/g, '')
-    if (!token) throw Error('Bot token missing')
-    return token
-  }
+  token(): string { return readBotToken(this.cfg.stateDir) }
   accepts(m: Message): boolean {
     const inScope = m.channelId === this.cfg.channel || (m.channel?.isThread() && m.channel.parentId === this.cfg.channel)
     if (m.guildId !== this.cfg.guild || !inScope || m.webhookId || m.author.bot || m.author.id !== this.cfg.owner) return false
@@ -50,14 +44,7 @@ export class DiscordPort {
         const files: string[] = a.files ?? []
         if (!Array.isArray(files) || files.length > 10) throw Error('Max 10 files')
         for (const f of files) this.assertFile(f)
-        const ids: string[] = []
-        const chunks = a.text.match(/[\s\S]{1,1900}/g) ?? ['']
-        for (let i = 0; i < chunks.length; i++) {
-          const msg = await ch.send({ content: chunks[i], ...(i === 0 ? { files } : {}),
-            ...(i === 0 && a.reply_to ? { reply: { messageReference: a.reply_to, failIfNotExists: false } } : {}),
-            allowedMentions: { parse: [], users: [this.cfg.owner] },
-          }); ids.push(msg.id)
-        }
+        const ids = await sendChunked(ch, a.text, { users: [this.cfg.owner], files, replyTo: a.reply_to })
         return `sent IDs: ${ids.join(', ')}`
       }
       case 'discord_create_thread': {
@@ -70,27 +57,12 @@ export class DiscordPort {
         return JSON.stringify([...msgs.values()].reverse().map((m: any) => ({ id: m.id, author: m.author.id, bot: m.author.bot, text: m.content, attachments: [...m.attachments.values()].map((x: any) => ({ name: x.name, size: x.size })) })))
       }
       case 'discord_download_attachment': {
-        const msg = await ch.messages.fetch(a.message_id); const paths: string[] = []
-        const inbox = join(this.cfg.stateDir, 'inbox'); mkdirSync(inbox, { recursive: true, mode: 0o700 })
-        for (const att of msg.attachments.values()) {
-          if (att.size > 25 * 1024 * 1024) throw Error('Attachment exceeds 25MB')
-          const url = new URL(att.url)
-          if (url.protocol !== 'https:' || !['cdn.discordapp.com', 'media.discordapp.net'].includes(url.hostname)) throw Error('Unexpected attachment host')
-          const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(30000) })
-          if (!response.ok) throw Error('Attachment download failed')
-          const reader = response.body!.getReader(); let size = 0; const data: Uint8Array[] = []
-          while (true) { const r = await reader.read(); if (r.done) break; size += r.value.length; if (size > 25 * 1024 * 1024) { await reader.cancel(); throw Error('Attachment exceeds 25MB') }; data.push(r.value) }
-          const path = join(inbox, `${att.id}-${basename(att.name ?? 'attachment').replace(/[^\p{L}\p{N}._-]/gu, '_')}`)
-          writeFileSync(path, Buffer.concat(data), { mode: 0o600 }); paths.push(path)
-        }
+        const msg = await ch.messages.fetch(a.message_id)
+        const paths = await downloadAttachments(msg.attachments.values(), join(this.cfg.stateDir, 'inbox'))
         return JSON.stringify(paths)
       }
       default: throw Error('Unknown Discord tool')
     }
   }
-  assertFile(f: string) {
-    assertPublicAttachment(f, this.cfg.stateDir, this.cfg.privateRoots)
-    const real = realpathSync(f)
-    if (!statSync(real).isFile() || statSync(real).size > 25 * 1024 * 1024) throw Error('File must be regular and at most 25MB')
-  }
+  assertFile(f: string) { assertFile(f, this.cfg.stateDir, this.cfg.privateRoots) }
 }

@@ -12,6 +12,7 @@ unset config_env
 export ORCA_BIN="${ORCA_BIN:-${ORCA_CLI_COMMAND:-orca}}"
 export CODEX_BIN="${CODEX_BIN:-codex}"
 export CLAUDE_BIN="${CLAUDE_BIN:-claude}"
+export GROK_BIN="${GROK_BIN:-grok}"
 THREADS_DIR="$STATE_DIR_ROOT/threads"
 POOL_FILE="$STATE_DIR_ROOT/pool.json"
 POOL_LOCK="$STATE_DIR_ROOT/pool.lock"
@@ -40,7 +41,30 @@ project_channels() { python3 -c 'import json,sys;[print(k) for k,v in json.load(
 lounge_channel()  { role_enabled 비전 || return 0; python3 -c 'import json,sys;print(next((k for k,v in json.load(open(sys.argv[1]))["routes"].items() if v.get("kind") == "lounge"),""))' "$ROUTES_FILE"; }
 project_name_of() { route_get "[\"routes\"][\"$1\"][\"name\"]"; }
 project_path_of() { route_get "[\"routes\"][\"$1\"][\"path\"]"; }
-worker_bots()   { role_enabled 작업자 || return 0; python3 -c 'import json,sys;[print(b) for b in json.load(open(sys.argv[1]))["bots"]["workers"]]' "$ROUTES_FILE"; }
+# worker_entries [engine] → "name<TAB>engine<TAB>model<TAB>effort" 줄. workers 항목은 문자열(=claude) 또는 {name, engine, model?, effort?}.
+worker_entries() { role_enabled 작업자 || return 0; python3 "$ORCH_LIB_ROOT/bin/config.py" workers "$@"; }
+worker_bots()   { worker_entries "$@" | cut -f1; }
+# worker_field <봇> <2=engine|3=model|4=effort>  → 설정에 없는 봇이면 1
+worker_field()  { local l; l="$(worker_entries | awk -F'\t' -v b="$1" '$1==b' | head -1)"; [[ -n "$l" ]] || return 1; print -r -- "$l" | cut -f"$2"; }
+worker_engine() { worker_field "$1" 2; }
+
+# grok_usage_line <sessionId>  → `grok usage` 요약 한 줄. grok.com 구독 인증이면 $ 는 API 환산값이다. 실패하면 1.
+grok_usage_line() {
+  [[ -n "${1:-}" ]] || return 1
+  python3 - "$GROK_BIN" "$1" <<'PY'
+import json, subprocess, sys
+try:
+    out = subprocess.run([sys.argv[1], "usage", sys.argv[2]], capture_output=True, text=True, timeout=20, stdin=subprocess.DEVNULL)
+    s = json.loads(out.stdout)["session"]
+except Exception:
+    sys.exit(1)
+def k(n):
+    n = int(n or 0)
+    return str(n) if n < 1000 else f"{n/1000:.1f}k" if n < 10000 else f"{round(n/1000)}k"
+cost = int(s.get("costUsdTicks") or 0) / 1e10
+print(f"토큰 입력 {k(s.get('inputTokens'))}(캐시 {k(s.get('cachedReadTokens'))}) · 출력 {k(s.get('outputTokens'))} · ${cost:.3f}(환산) · {s.get('primaryModelId') or '?'} · {s.get('turnCount') or 0}턴")
+PY
+}
 
 # --- 봇 토큰 -------------------------------------------------------------
 bot_env_file() { print -- "$BOTS_DIR/$1.env"; }
@@ -129,6 +153,8 @@ open(t, "w").write(json.dumps(d, ensure_ascii=False, indent=2) + "\n")
 os.replace(t, f)
 PY
 }
+# registry_engine <threadId> → 등록부 engine (기존 기록처럼 없으면 claude)
+registry_engine() { local e; e="$(registry_get "$1" engine)"; print -r -- "${e:-claude}"; }
 # registry_list [status]  → "threadId<TAB>status<TAB>project<TAB>bot<TAB>terminalHandle<TAB>startedAt"
 registry_list() {
   python3 - "$THREADS_DIR" "${1:-}" <<'PY'
@@ -221,10 +247,12 @@ print(d if not isinstance(d,(dict,list)) else json.dumps(d,ensure_ascii=False))'
 shq() { print -r -- "${(qq)1}"; }
 
 # Orca 터미널은 호출 셸의 환경을 상속한다고 가정하지 않는다. 비밀 값은 넣지 않는다.
+# runtime_exports [grok]  → grok 브리지 터미널에는 GROK_BIN 도 넘긴다 (마크 커맨드는 기존 그대로).
 runtime_exports() {
-  local key
+  local key keys=(ORCH_ROOT ROUTES_FILE STATE_DIR_ROOT BOTS_DIR ORCH_CODEX_AUTH_FILE ORCA_BIN CODEX_BIN CLAUDE_BIN)
+  [[ "${1:-}" != grok ]] || keys+=(GROK_BIN)
   print -n -- 'export '
-  for key in ORCH_ROOT ROUTES_FILE STATE_DIR_ROOT BOTS_DIR ORCH_CODEX_AUTH_FILE ORCA_BIN CODEX_BIN CLAUDE_BIN PATH; do
+  for key in $keys PATH; do
     print -n -r -- "$key=$(shq "${(P)key}") "
   done
   [[ -z "${CODEX_HOME:-}" ]] || print -n -r -- "CODEX_HOME=$(shq "$CODEX_HOME") "

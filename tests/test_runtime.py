@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from urllib.parse import parse_qs, urlparse
 
@@ -439,6 +440,165 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(bool(permissions & (1 << 34)), name == "마크1")
             self.assertFalse(permissions & (1 << 4))
         self.assertEqual(self.calls(), [])
+
+    # --- 그록 엔진 작업자 -------------------------------------------------
+    def use_grok_workers(self):
+        self.cfg["bots"]["workers"] = ["마크1", {"name": "그록1", "engine": "grok"}, {"name": "그록2", "engine": "grok", "model": "grok-4.7-build-fast", "effort": "high"}]
+        self.save_config()
+
+    def stable_dry_run(self, *args):
+        """uuidgen 을 고정하고 임시 프롬프트 파일 이름을 지워 두 번의 dry-run 출력을 비교할 수 있게 한다."""
+        fake = self.area / "fake-bin"
+        fake.mkdir(exist_ok=True)
+        (fake / "uuidgen").write_text("#!/bin/sh\necho 12345678-ABCD-EF00-1111-222233334444\n")
+        (fake / "uuidgen").chmod(0o755)
+        r = self.command("spawn-worker.sh", CHANNEL, THREAD, "--title", "dry task", "--dry-run", *args, PATH=f"{fake}:{self.env['PATH']}")
+        import re
+        return r, re.sub(r"worker-prompt\.\w+", "worker-prompt.X", r.stdout)
+
+    def test_config_workers_accepts_mixed_schema_and_keeps_string_routes(self):
+        r = self.command("config.py", "workers")
+        self.assert_ok(r)
+        self.assertEqual(r.stdout, "마크1\tclaude\t\t\n")
+        self.use_grok_workers()
+        self.assertEqual(self.command("config.py", "workers").stdout, "마크1\tclaude\t\t\n그록1\tgrok\t\t\n그록2\tgrok\tgrok-4.7-build-fast\thigh\n")
+        self.assertEqual(self.command("config.py", "workers", "grok").stdout.splitlines()[0], "그록1\tgrok\t\t")
+        sys.path.insert(0, str(self.root / "bin"))
+        try:
+            import config
+            self.assertIn(("작업자", "그록1"), config.enabled_bots(self.cfg))
+        finally:
+            sys.path.remove(str(self.root / "bin"))
+
+    def test_doctor_rejects_unknown_engine_and_duplicate_worker(self):
+        for workers, expected in (([{"name": "그록1", "engine": "gpt"}], "engine"), (["마크1", {"name": "마크1", "engine": "grok"}], "중복"), ([{"name": "", "engine": "grok"}], "빈 봇 이름")):
+            with self.subTest(workers=workers):
+                self.cfg["bots"]["workers"] = workers
+                self.save_config()
+                r = self.command("setup.py", "doctor", "--offline", "--json")
+                self.assertEqual(r.returncode, 1)
+                self.assertNotIn("Traceback", r.stderr)
+                details = " ".join(c["detail"] for c in json.loads(r.stdout)["checks"] if not c["ok"])
+                self.assertIn(expected, details)
+
+    def test_doctor_checks_grok_prerequisites_only_with_grok_worker(self):
+        names = lambda: {c["check"] for c in json.loads(self.command("setup.py", "doctor", "--offline", "--json", GROK_BIN="/nonexistent/grok").stdout)["checks"]}
+        self.assertNotIn("grok", names())
+        self.use_grok_workers()
+        checks = names()
+        self.assertIn("grok", checks)
+        self.assertIn("의존성: grok-worker", checks)
+
+    def test_pool_leases_by_engine_and_fills_per_engine(self):
+        self.use_grok_workers()
+        lease = lambda tid, *a: self.command("pool.sh", "lease", tid, *a)
+        self.assertEqual(lease("1", "grok", "그록2").stdout.strip(), "그록2")
+        self.assertEqual(lease("2", "grok").stdout.strip(), "그록1")
+        self.assertEqual(lease("3", "grok").returncode, 3)  # 마크1 이 비어 있어도 grok 풀은 꽉 참
+        self.assertEqual(lease("4").stdout.strip(), "마크1")
+        self.assertEqual(lease("5").returncode, 3)
+        self.assertEqual(lease("2", "grok").stdout.strip(), "그록1")  # 같은 스레드는 같은 봇
+        status = self.command("pool.sh", "status").stdout.splitlines()
+        self.assertEqual(status[0], "3/3 사용 중 (claude 1/1 · grok 2/2)")
+        self.assertIn("  그록1\tgrok\t2\t", "\n".join(status))
+
+    def test_full_grok_pool_queues_with_engine_even_if_claude_free(self):
+        self.use_grok_workers()
+        for tid in ("1", "2"):
+            self.assert_ok(self.command("pool.sh", "lease", tid, "grok"))
+        r = self.command("spawn-worker.sh", CHANNEL, THREAD, "--engine", "grok", "--title", "t")
+        self.assertEqual(r.returncode, 3, r.stderr)
+        record = json.loads((self.root / f"state/threads/{THREAD}.json").read_text())
+        self.assertEqual((record["status"], record["engine"], record["model"], record["explicitModel"]), ("queued", "grok", "grok-4.7", False))
+        self.assertIsNone(json.loads((self.root / "state/pool.json").read_text())["마크1"]["threadId"])
+
+    def test_grok_spawn_dry_run_uses_bridge_without_claude_flags(self):
+        self.use_grok_workers()
+        r, out = self.stable_dry_run("--engine", "grok")
+        self.assert_ok(r)
+        command = out.split("--- orca terminal create ---", 1)[1]
+        self.assertIn("grok-worker/bridge.ts", command)
+        self.assertIn("GROK_BIN=", command)
+        self.assertIn(f"threads/{THREAD}.json", command)
+        for flag in ("--dangerously-skip-permissions", "--dangerously-load-development-channels", "--append-system-prompt-file", "--settings", "DISCORD_ONLY_CHATS"):
+            self.assertNotIn(flag, command)
+        extra = json.loads(out.split("--- registry extra ---", 1)[1].split("--- access.json", 1)[0])
+        self.assertEqual(extra["engine"], "grok")
+        self.assertTrue(extra["rolesFile"].endswith("roles/작업자-grok.md"))
+        self.assertEqual((extra["guildId"], extra["ownerUserId"], extra["sandbox"]), (self.cfg["guildId"], self.cfg["ownerUserId"], ""))
+        self.assertIn("model=grok-4.7 effort=", out)
+        r, out = self.stable_dry_run("--bot", "그록2")
+        self.assertIn("model=grok-4.7-build-fast effort=high", out)
+        r, out = self.stable_dry_run("--bot", "그록2", "--model", "grok-4.6")
+        self.assertIn("model=grok-4.6 effort=high", out)
+        self.assertNotEqual(self.stable_dry_run("--bot", "그록2", "--engine", "claude")[0].returncode, 0)
+        self.assertFalse((self.root / "state").exists())
+
+    def test_default_dry_run_unchanged_by_grok_workers(self):
+        r, before = self.stable_dry_run()
+        self.assert_ok(r)
+        self.use_grok_workers()
+        r, after = self.stable_dry_run()
+        self.assert_ok(r)
+        self.assertEqual(before, after)
+        self.assertIn("--dangerously-skip-permissions --session-id 12345678-abcd-ef00-1111-222233334444", after)
+        self.assertIn("roles/작업자.md", after)
+        self.assertNotIn("registry extra", after)
+        self.assertNotIn("GROK_BIN", after)
+
+    def test_finish_spawns_only_queued_request_of_released_engine(self):
+        lib = self.root / "bin/lib.sh"
+        lib.write_text(lib.read_text() + '\ndiscord_api() { print -- "{}"; }\ndiscord_archive_thread() { :; }\nops_log() { :; }\n')
+        spawned = self.area / "retried"
+        (self.root / "bin/retry-queued.sh").write_text(f'#!/bin/zsh\nprint -r -- "$1" >> {json.dumps(str(spawned))}\n')
+        self.use_grok_workers()
+        self.assert_ok(self.command("pool.sh", "lease", THREAD, "grok"))
+        folder = self.root / "state/threads"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{THREAD}.json").write_text(json.dumps({"threadId": THREAD, "status": "active", "bot": "그록1", "engine": "grok"}))
+        queued = {"301": {"engine": "claude"}, "302": {"engine": "grok", "bot": "그록2"}, "303": {"engine": "grok"}}
+        for i, (tid, fields) in enumerate(queued.items()):
+            (folder / f"{tid}.json").write_text(json.dumps(dict(threadId=tid, status="queued", queuedAt=f"2026-01-0{i + 1}T00:00:00Z", **fields)))
+        self.assert_ok(self.command("finish-worker.sh", THREAD, "succeeded", GROK_BIN="/usr/bin/false"))
+        for _ in range(50):
+            if spawned.exists(): break
+            time.sleep(0.1)
+        self.assertEqual(spawned.read_text(), "303\n")
+
+    def test_retry_queued_passes_engine_bot_and_pinned_defaults(self):
+        calls = self.area / "spawn-args"
+        (self.root / "bin/spawn-worker.sh").write_text(f'#!/bin/zsh\nprint -r -- "${{(j:|:)@}}" > {json.dumps(str(calls))}\n')
+        folder = self.root / "state/threads"
+        folder.mkdir(parents=True)
+        (folder / f"{THREAD}.json").write_text(json.dumps({"threadId": THREAD, "channelId": CHANNEL, "status": "queued", "taskTitle": "t", "currentRequest": "r",
+            "requestMessageId": "", "model": "grok-4.7", "effort": "high", "explicitModel": False, "explicitEffort": True, "engine": "grok", "bot": "그록2", "newWorktree": True, "resume": False}))
+        self.assert_ok(self.command("retry-queued.sh", THREAD))
+        args = calls.read_text().strip().split("|")
+        for pair in (["--default-model", "grok-4.7"], ["--effort", "high"], ["--engine", "grok"], ["--bot", "그록2"]):
+            i = args.index(pair[0])
+            self.assertEqual(args[i:i + 2], pair)
+
+    def test_worker_discord_react_falls_back_to_parent_channel(self):
+        lib = self.root / "bin/lib.sh"
+        log = self.area / "api-calls"
+        lib.write_text(lib.read_text() + f'\ndiscord_api() {{ print -r -- "$1 $2 $3" >> {json.dumps(str(log))}; if [[ "$3" == /channels/{THREAD}/* ]]; then DISCORD_HTTP=404; print -- \'{{"code": 10008}}\'; return 1; fi; DISCORD_HTTP=204; }}\n')
+        folder = self.root / "state/threads"
+        folder.mkdir(parents=True)
+        (folder / f"{THREAD}.json").write_text(json.dumps({"threadId": THREAD, "channelId": CHANNEL, "bot": "그록1"}))
+        r = self.command("worker-discord.sh", "react", "999999999999999999", "✅", ORCA_THREAD_ID=THREAD)
+        self.assert_ok(r)
+        self.assertEqual(log.read_text().splitlines(), [
+            f"그록1 PUT /channels/{THREAD}/messages/999999999999999999/reactions/%E2%9C%85/@me",
+            f"그록1 PUT /channels/{CHANNEL}/messages/999999999999999999/reactions/%E2%9C%85/@me"])
+        self.assertNotEqual(self.command("worker-discord.sh", "react", "1", "✅").returncode, 0)  # ORCA_THREAD_ID 없음
+
+    def test_grok_role_shares_common_sections_with_claude_role(self):
+        def section(text, title):
+            return text.split(f"\n## {title}\n", 1)[1].split("\n## ", 1)[0]
+        claude, grok = ((SOURCE / "roles" / name).read_text() for name in ("작업자.md", "작업자-grok.md"))
+        self.assertEqual(section(claude, "작업 경로"), section(grok, "작업 경로"))
+        self.assertEqual(section(claude, "인계 — 사용자가 요청했을 때만").splitlines()[0], section(grok, "인계 — 사용자가 요청했을 때만").splitlines()[0])
+        self.assertIn("worker-discord.sh\" react <requestMessageId>", grok)
 
 
 if __name__ == "__main__":

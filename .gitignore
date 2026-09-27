@@ -21,3 +21,6 @@ codex-worker/node_modules/
 routes.json
 runs/
 assets/
+
+# Grok worker dependencies
+grok-worker/node_modules/

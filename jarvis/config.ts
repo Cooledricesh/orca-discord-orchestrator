@@ -27,7 +27,7 @@ export interface Routes {
   generalChannelId: string
   guildId: string
   ownerUserId: string
-  bots: Record<string, string | string[]>
+  bots: Record<string, string | (string | { name: string; engine?: string })[]>
   botDisplay?: Record<string, string>
   botColors?: Record<string, number>
   models?: Record<string, unknown>
@@ -109,7 +109,7 @@ export function loadBotEnv(file: string): { token: string; appId: string } {
 export function loadTrustedBots(routes: Routes, botsDir = botsDirectory(routes)): Map<string, string> {
   const names: string[] = []
   const c = routes.bots['상담역']; if (roleEnabled(routes, '상담역') && typeof c === 'string') names.push(c)
-  const w = routes.bots['workers']; if (roleEnabled(routes, '작업자') && Array.isArray(w)) names.push(...w)
+  const w = routes.bots['workers']; if (roleEnabled(routes, '작업자') && Array.isArray(w)) names.push(...w.map(x => typeof x === 'string' ? x : x.name))
   const out = new Map<string, string>()
   for (const n of new Set(names)) {
     try {

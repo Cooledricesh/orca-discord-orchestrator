@@ -1,5 +1,5 @@
 #!/bin/zsh
-# 마크 종료. finish-worker.sh <threadId> <succeeded|failed|stopped>
+# 작업자(마크·그록) 종료. finish-worker.sh <threadId> <succeeded|failed|stopped>
 # 스레드 이름·보관 → 등록부 → 풀 반납 → STATE_DIR 삭제 → 대기열 스폰 → 터미널 close / PID kill
 # (작업자가 자기 finish 를 부르면 터미널 close 에서 자기 프로세스가 죽는다. 그 전에 Discord 답장을 끝내 둔다.)
 set -euo pipefail
@@ -15,6 +15,9 @@ case "$(registry_get "$thread" status)" in done|failed|stopped) exit 0;; esac
 
 pidf="$THREADS_DIR/$thread.pid"; pid="$(cat "$pidf" 2>/dev/null || true)"
 bot="$(registry_get "$thread" bot)"
+engine="$(registry_engine "$thread")"
+# 엔진별 프로세스 패턴 (grok: 브리지가 자식 grok 프로세스 그룹을 정리한다)
+proc=claude; [[ "$engine" != grok ]] || proc=grok-worker/bridge.ts
 handle="$(registry_get "$thread" terminalHandle)"
 prompt="$(registry_get "$thread" promptFile)"
 project="$(registry_get "$thread" project)"
@@ -38,9 +41,17 @@ registry_update "$thread" "status=$st" "endedAt=$(now)"
 [[ -d "$sd" ]] && rm -rf "$sd"
 [[ -n "$prompt" && -f "$prompt" ]] && rm -f "$prompt"
 [[ -n "$project" ]] && { mkdir -p "$ORCH_ROOT/runs/$project"; print -- "- $(date +%H:%M) $st $bot thread=$thread" >> "$ORCH_ROOT/runs/$project/$(date +%Y-%m-%d).md"; }
+if [[ "$engine" == grok && -n "$project" ]] && usage="$(grok_usage_line "$(registry_get "$thread" sessionId)")"; then
+  print -- "  - grok usage: $usage" >> "$ORCH_ROOT/runs/$project/$(date +%Y-%m-%d).md"
+fi
 
-# 대기열: 봇이 반납됐으니 queued 하나를 스폰한다. 이 프로세스가 곧 죽어도 살아남도록 nohup + disown.
-q="$(registry_list queued | head -1 | cut -f1 || true)"
+# 대기열: 봇이 반납됐으니 같은 엔진(봇 지정이면 그 봇)의 queued 하나를 스폰한다. 이 프로세스가 곧 죽어도 살아남도록 nohup + disown.
+q=""
+for c in ${(f)"$(registry_list queued | cut -f1 || true)"}; do
+  [[ "$(registry_engine "$c")" == "$engine" ]] || continue
+  qb="$(registry_get "$c" bot)"; [[ -z "$qb" || "$qb" == "$bot" ]] || continue
+  q="$c"; break
+done
 if [[ -n "$q" ]]; then
   log "대기열 스폰: $q"
   nohup "$ORCH_ROOT/bin/retry-queued.sh" "$q" >> "$STATE_DIR_ROOT/log/queue-spawn.log" 2>&1 &!
@@ -50,6 +61,6 @@ print -- "finished thread=$thread status=$st bot=${bot:-?}"
 
 # 프로세스 정리 (재부팅 후 재사용된 PID 는 건드리지 않는다).
 [[ -z "$handle" ]] || orca terminal close --terminal "$handle" --tab --json >/dev/null 2>&1 || true
-if pid_is "$pid" claude; then
-  sleep 3; kill -TERM "$pid" 2>/dev/null || true; sleep 3; pid_is "$pid" claude && kill -KILL "$pid" 2>/dev/null || true
+if pid_is "$pid" "$proc"; then
+  sleep 3; kill -TERM "$pid" 2>/dev/null || true; sleep 3; pid_is "$pid" "$proc" && kill -KILL "$pid" 2>/dev/null || true
 fi

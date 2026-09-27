@@ -23,6 +23,7 @@
     "workers": [
       "마크1"
     ],
+    "_workersComment": "문자열 = Claude 작업자. Grok 작업자는 {\"name\": \"그록1\", \"engine\": \"grok\"} (선택: \"model\", \"effort\"). docs/ADMIN.md 그록 작업자 추가 참고",
     "리뷰어": "자비스"
   },
   "models": {
@@ -30,6 +31,8 @@
     "접수원": "sonnet",
     "작업자": "opus",
     "작업자Effort": "medium",
+    "grok작업자": "grok-4.7",
+    "grok작업자Effort": "",
     "리뷰어": {
       "model": "",
       "effort": "",

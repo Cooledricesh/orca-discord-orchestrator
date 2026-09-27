@@ -109,3 +109,18 @@ bin/status.sh
 6. 결과 브랜치를 검토한 뒤 원본에 병합할 방법을 정한다. 종료는 병합·worktree 삭제 명령이 아니다.
 
 실제 연결이 안정적인 것을 확인한 다음 [운영 가이드](ADMIN.md)의 launchd 등록으로 자동 복구·유휴 정리를 켠다. 계정 사용량을 본 뒤 마크를 추가한다. 비전은 별도 앱·라운지·`enabled.비전=true`가 필요하며 초기 적용에는 필요 없다.
+
+## 선택: 그록 작업자
+
+Grok CLI로 동작하는 작업자 봇을 마크와 함께 둘 수 있다. 초기 적용에는 필요 없다. 자세한 내용은 [운영 가이드](ADMIN.md#그록-작업자-추가-선택).
+
+```sh
+grok login                      # grok.com 계정. `grok models` 첫 줄에 logged in 확인
+cd grok-worker && bun install --ignore-scripts && cd ..
+# Discord 앱(그록1) 생성 + Message Content Intent → routes.json bots.workers 에 {"name":"그록1","engine":"grok"} 추가
+python3 bin/setup.py bot-env 그록1
+python3 bin/setup.py invites
+python3 bin/setup.py doctor
+```
+
+해피에게 "그록으로 …"라고 요청하면 그록 작업자가 배정된다. 기본 모델은 `models.grok작업자`(예: `grok-4.7`)다.

@@ -164,6 +164,49 @@ class ModelControlTests(unittest.TestCase):
         self.request("!모델 해피 sonnet\n!모델 확인 123")
         self.assertFalse(control.directory().exists())
 
+    # --- 그록 작업자 ---------------------------------------------------
+    def use_grok(self):
+        self.cfg["bots"]["workers"] = ["마크1", {"name": "그록1", "engine": "grok"}]
+        self.cfg["models"].update({"grok작업자": "grok-4.7", "grok작업자Effort": ""})
+        self.path.write_text(json.dumps(self.cfg))
+        grok = patch.object(control, "grok_models", return_value=["grok-4.7", "grok-4.7-build-fast", "grok-4.6"])
+        grok.start(); self.addCleanup(grok.stop)
+
+    def test_worker_names_come_from_config(self):
+        self.assertEqual(self.request("!모델 마크2 sonnet")["text"], control.HELP)  # 설정에 없는 봇 → 도움말
+        self.cfg["bots"]["workers"] = ["마크2"]
+        self.path.write_text(json.dumps(self.cfg))
+        self.propose("!모델 마크2 sonnet")
+        self.assertEqual(self.state()["pending"]["role"], "작업자")
+
+    def test_grok_worker_sets_grok_defaults_without_restart(self):
+        self.use_grok()
+        code = self.propose("!모델 그록1 grok-4.6 high"); self.confirm(code)
+        with patch.object(control.subprocess, "run") as run, patch.object(control, "notify"):
+            control.apply_job(code)
+            run.assert_not_called()
+        models = self.read()["models"]
+        self.assertEqual((models["grok작업자"], models["grok작업자Effort"]), ("grok-4.6", "high"))
+        self.assertEqual((models["작업자"], models["작업자Effort"]), ("opus", "medium"))
+        self.assertIn("그록: grok-4.6", self.request("!모델")["text"])
+
+    def test_cross_engine_models_rejected(self):
+        self.use_grok()
+        for command in ("!모델 그록1 opus", "!모델 그록1 grok-9", "!모델 그록1 grok-4.6 max", "!모델 마크1 grok-4.6"):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                self.request(command)
+        self.assertEqual(self.read(), self.cfg)
+
+    def test_grok_models_parses_cli_and_reports_failure(self):
+        output = "You are logged in with grok.com.\n\nDefault model: grok-4.7\n\nAvailable models:\n  * grok-4.7 (default)\n  - grok-4.6\n"
+        with patch.object(control.subprocess, "run", return_value=Mock(returncode=0, stdout=output)):
+            self.assertEqual(control.grok_models(), ["grok-4.7", "grok-4.6"])
+        for result in (Mock(returncode=1, stdout=""), Mock(returncode=0, stdout="You are not logged in.\n")):
+            with patch.object(control.subprocess, "run", return_value=result), self.assertRaisesRegex(ValueError, "grok models"):
+                control.grok_models()
+        with patch.object(control.subprocess, "run", side_effect=FileNotFoundError), self.assertRaisesRegex(ValueError, "grok login"):
+            control.grok_models()
+
 
 if __name__ == "__main__":
     unittest.main()

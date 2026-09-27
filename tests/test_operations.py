@@ -78,6 +78,22 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(self.git("rev-parse", "HEAD"), self.base)
         self.assertEqual(job["chat"], THREAD)
 
+    def test_notify_accepts_dict_worker_entries(self):
+        self.cfg["bots"]["workers"] = ["마크1", {"name": "그록1", "engine": "grok"}]
+        (self.root / "routes.json").write_text(json.dumps(self.cfg))
+        bots = self.area / "bots"
+        bots.mkdir()
+        (bots / "그록1.env").write_text("DISCORD_APP_ID=1\nDISCORD_BOT_TOKEN=local-test-only\n")
+        self.notification.stop()
+        try:
+            with patch.dict(os.environ, {"BOTS_DIR": str(bots)}), patch.object(ops.urllib.request, "urlopen") as urlopen:
+                ops.notify({"chat": THREAD, "bot": "그록1", "id": "0" * 12, "status": "done", "notes": []})
+                self.assertEqual(urlopen.call_count, 1)
+                with self.assertRaises(ValueError):
+                    ops.notify({"chat": THREAD, "bot": "모르는봇", "id": "0" * 12, "status": "done", "notes": []})
+        finally:
+            self.notification.start()
+
     def test_plan_rejects_other_project(self):
         self.change()
         self.cfg["routes"][CHANNEL]["path"] = str(self.area / "other")

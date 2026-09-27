@@ -15,7 +15,7 @@ import sys
 from urllib.parse import urlencode
 
 sys.dont_write_bytecode = True
-from config import ROLES, absolute, enabled_bots, load_routes, role_enabled, root_path, routes_path, runtime_paths
+from config import ENGINES, ROLES, absolute, enabled_bots, load_routes, role_enabled, root_path, routes_path, runtime_paths, worker_entries
 
 
 def run(args, timeout=15):
@@ -92,6 +92,15 @@ def config_errors(data):
         bot_names.append(name)
     if role_enabled(data, "작업자") and not data.get("bots", {}).get("workers"):
         errors.append("bots.workers: 작업자 봇 한 개 이상 필요")
+    seen = set()
+    for i, entry in enumerate(worker_entries(data)):
+        if entry["engine"] not in ENGINES:
+            errors.append(f"bots.workers[{i}].engine: {' | '.join(ENGINES)} 만 허용")
+        if not entry["name"]:
+            errors.append(f"bots.workers[{i}]: 빈 봇 이름")
+        elif entry["name"] in seen:
+            errors.append(f"bots.workers: 중복 봇 이름 {entry['name']}")
+        seen.add(entry["name"])
     if role_enabled(data, "비전") and sum(isinstance(r, dict) and r.get("kind") == "lounge" for r in routes.values()) != 1:
         errors.append("비전 활성 시 lounge 라우트는 정확히 하나 필요")
     review = data.get("review", {})
@@ -144,6 +153,7 @@ def doctor(args):
         executable = os.environ.get({"orca": "ORCA_BIN", "codex": "CODEX_BIN", "claude": "CLAUDE_BIN"}.get(binary, "")) or binary
         found = shutil.which(executable)
         add(binary, found is not None, found or "설치/실행 경로 확인 필요")
+    grok_workers = False
     try:
         data = load_routes()
     except ValueError as exc:
@@ -171,6 +181,14 @@ def doctor(args):
         if any(role_enabled(data, r) for r in ("상담역", "접수원", "작업자")): packages.append("plugin/discord-orca")
         if role_enabled(data, "리뷰어"): packages.append("jarvis")
         if role_enabled(data, "비전"): packages.append("codex-worker")
+        grok_workers = role_enabled(data, "작업자") and any(e["engine"] == "grok" for e in worker_entries(data))
+        if grok_workers:
+            packages.append("grok-worker")
+            found = shutil.which(os.environ.get("GROK_BIN") or "grok")
+            add("grok", found is not None, found or "grok CLI 설치/실행 경로 확인 필요 (그록 작업자)")
+            if data.get("grokSandbox"):
+                # 프로필은 사용자 전역 파일에만 둘 수 있다. 안내만 하고 읽거나 쓰지 않는다.
+                add("Grok 샌드박스 프로필", True, f"~/.grok/sandbox.toml 에 [{data['grokSandbox']}] 프로필 필요 (extends=\"workspace\", read_write 에 {root_path() / 'runs'} 와 {paths['STATE_DIR_ROOT']})")
         for package in packages:
             installed = (root_path() / package / "node_modules").is_dir()
             add(f"의존성: {package}", installed, "설치됨" if installed else f"cd {shlex.quote(str(root_path() / package))} && bun install --ignore-scripts")
@@ -200,6 +218,12 @@ def doctor(args):
         add("현재 셸 Claude 로그인", authenticated, "로그인됨 (채널 기능은 별도 연결 검증 필요)" if authenticated else "claude auth login 필요")
         rc, _ = run([os.environ.get("CODEX_BIN", "codex"), "login", "status"])
         add("현재 셸 Codex 로그인", rc == 0, "로그인됨" if rc == 0 else "codex login 필요")
+        if data and grok_workers:
+            # 토큰·auth.json 은 읽지 않는다. `grok models` 첫 줄의 로그인 상태만 본다.
+            rc, output = run([os.environ.get("GROK_BIN") or "grok", "models"], timeout=30)
+            first = (output.strip().splitlines() or [""])[0]
+            ok = rc == 0 and "logged in" in first.lower()
+            add("현재 셸 Grok 로그인", ok, "로그인됨" if ok else "grok login 필요 (grok.com)")
         if data:
             targets = [str(root_path())] + [r.get("path", "") for r in data.get("routes", {}).values() if isinstance(r, dict)]
             for target in dict.fromkeys(targets):

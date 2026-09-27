@@ -10,7 +10,12 @@ trap 'rm -rf "$tmp"' EXIT
 registry_get "$thread" taskTitle > "$tmp/title"
 registry_get "$thread" currentRequest > "$tmp/request"
 qargs=()
+# explicit*=False 면 대기 시점 기본값으로만 넘긴다 (봇 항목 model/effort 가 우선). 필드가 없는 이전 기록은 명시값으로 본다.
 for field in model effort; do
+  value="$(registry_get "$thread" "$field")"; [[ -n "$value" ]] || continue
+  if [[ "$(registry_get "$thread" "explicit${(C)field}")" == False ]]; then qargs+=("--default-$field" "$value"); else qargs+=("--$field" "$value"); fi
+done
+for field in engine bot; do
   value="$(registry_get "$thread" "$field")"; [[ -z "$value" ]] || qargs+=("--$field" "$value")
 done
 [[ "$(registry_get "$thread" newWorktree)" == True ]] && qargs+=(--new-worktree)

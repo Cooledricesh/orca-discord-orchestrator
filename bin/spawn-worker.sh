@@ -1,9 +1,10 @@
 #!/bin/zsh
-# 마크(Claude) 작업자 스폰.
+# 작업자 스폰 (마크=Claude, 그록=Grok 브리지).
 #   spawn-worker.sh <channelId> <threadId> [--title "<t>|@file"] [--request-file <file>] [--request-message-id <id>]
-#                   [--model <id>] [--effort <low|medium|high|max>] [--new-worktree] [--resume] [--dry-run]
+#                   [--engine claude|grok] [--bot <이름>] [--model <id>] [--effort <low|medium|high|max>] [--new-worktree] [--resume] [--dry-run]
+# --engine: 기본 claude. --bot: 그 봇만 빌린다 (엔진은 그 봇의 엔진). 모델/effort: --model > 봇 항목 model > 엔진 기본값(작업자 / grok작업자).
 # exit 0: 스폰됨 (stdout 마지막 줄 `bot=<bot> display=<표시이름> terminal=<handle> plugin=ok|missing`). missing 이면 마크가 스레드를 못 듣는다 (스레드·#운영-로그에 ⚠️ 게시됨)
-# exit 3: 풀 꽉 참 (등록부에 status=queued 기록, finish-worker 가 다음에 자동 스폰)
+# exit 3: 그 엔진의 풀 꽉 참 (등록부에 status=queued + engine 기록, 같은 엔진 finish-worker 가 다음에 자동 스폰)
 # exit 1: 라우팅 불가 / 오류
 # --resume: 이 스레드의 직전 Claude 세션(등록부 sessionId)을 같은 경로에서 `claude --resume` 으로 되살린다. 사용자가 명시했을 때만.
 set -euo pipefail
@@ -12,7 +13,7 @@ source "$(dirname "$0")/lib.sh"
 channel="${1:-}"; thread="${2:-}"
 [[ "$channel" == <-> && "$thread" == <-> ]] || die "usage: spawn-worker.sh <channelId> <threadId> [--title t|@file] [--request-file f] [--request-message-id id] [--model m] [--effort e] [--new-worktree] [--resume] [--dry-run]"
 args=("$@"); shift 2
-title=""; request=""; request_id=""; new_wt=1; resume=0; dry=0; sel_model=""; sel_effort=""
+title=""; request=""; request_id=""; new_wt=1; resume=0; dry=0; sel_model=""; sel_effort=""; engine=""; sel_bot=""; def_model=""; def_effort=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --title) title="${2:-}"; shift 2;;
@@ -20,6 +21,11 @@ while [[ $# -gt 0 ]]; do
     --request-message-id) request_id="${2:-}"; shift 2;;
     --model) sel_model="${2:-}"; shift 2;;
     --effort) sel_effort="${2:-}"; shift 2;;
+    --engine) engine="${2:-}"; shift 2;;
+    --bot) sel_bot="${2:-}"; shift 2;;
+    # 대기열 재시도 전용: 대기 시점의 엔진 기본값 (봇 항목 model/effort 보다 우선순위가 낮다)
+    --default-model) def_model="${2:-}"; shift 2;;
+    --default-effort) def_effort="${2:-}"; shift 2;;
     --new-worktree) new_wt=1; shift;;
     --resume) resume=1; shift;;
     --dry-run) dry=1; shift;;
@@ -27,6 +33,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 role_enabled 작업자 || die "작업자 역할이 비활성화되어 있습니다"
+if [[ -n "$sel_bot" ]]; then
+  bot_engine="$(worker_engine "$sel_bot")" || die "작업자 봇이 아닙니다: $sel_bot"
+  [[ -z "$engine" || "$engine" == "$bot_engine" ]] || die "$sel_bot 은 $bot_engine 엔진 봇입니다 (--engine $engine 과 다름)"
+  engine="$bot_engine"
+fi
+# 재개는 등록부의 엔진 그대로 (기존 기록은 claude)
+if (( resume )); then
+  prev_engine="$(registry_engine "$thread")"
+  [[ -z "$engine" || "$engine" == "$prev_engine" ]] || die "재개는 같은 엔진만 가능합니다 (이전 세션: $prev_engine)"
+  engine="$prev_engine"
+fi
+engine="${engine:-claude}"
+[[ "$engine" == claude || "$engine" == grok ]] || die "엔진은 claude|grok: $engine"
+[[ -n "$(worker_bots "$engine")" ]] || die "$engine 엔진 작업자 봇이 routes.json bots.workers 에 없습니다"
 (( dry )) || with_thread_lock "$thread" "$ORCH_ROOT/bin/spawn-worker.sh" "${args[@]}"
 [[ "$title" == @* ]] && title="$(cat "${title#@}")"
 [[ -z "$request_id" || "$request_id" == <-> ]] || die "request-message-id 는 숫자 ID"
@@ -45,7 +65,10 @@ if (( ! resume )) && [[ "$proj_path" == "${ORCH_ROOT:A}" ]] && [[ -n "$(git -C "
 fi
 write_dir="$(route_get "[\"routes\"][\"$channel\"][\"writeDir\"]" 2>/dev/null || true)"
 owner="$(owner_id)"; guild="$(guild_id)"; plugin="$(channel_args)"
-model="${sel_model:-$(route_get '["models"]["작업자"]')}"; effort="${sel_effort:-$(route_get '["models"]["작업자Effort"]')}"
+mkey=작업자; [[ "$engine" == claude ]] || mkey="${engine}작업자"
+[[ -n "$def_model" ]] || def_model="$(route_get "[\"models\"][\"$mkey\"]" 2>/dev/null || true)"
+[[ -n "$def_effort" ]] || def_effort="$(route_get "[\"models\"][\"${mkey}Effort\"]" 2>/dev/null || true)"
+model="${sel_model:-$def_model}"; effort="${sel_effort:-$def_effort}"
 jarvis_app_id="$(reviewer_app_id)"
 lounge="$(lounge_channel)"
 
@@ -81,15 +104,22 @@ trap spawn_cleanup EXIT
 if (( dry )); then bot="(dry)"
 else
   orca_ok || die "Orca 런타임 응답 없음"
-  rc=0; bot="$("$ORCH_ROOT/bin/pool.sh" lease "$thread")" || rc=$?
+  rc=0; bot="$("$ORCH_ROOT/bin/pool.sh" lease "$thread" "$engine" "$sel_bot")" || rc=$?
   if (( rc == 3 )); then
-    registry_write "$thread" "$(python3 -c 'import json,sys;a=sys.argv;r=a[7]=="1";print(json.dumps(dict(threadId=a[1],channelId=a[2],project=a[3],path=(a[8] if r else a[4]),worktreeMode=(a[9] if r else None),bot=None,status="queued",taskTitle=a[5],newWorktree=a[6]=="1",resume=r,sessionId=(a[10] if r else None),queuedAt=a[11],currentRequest=a[12],requestMessageId=a[13],model=a[14],effort=a[15]),ensure_ascii=False))' \
-      "$thread" "$channel" "$project" "$proj_path" "$title" "$new_wt" "$resume" "$prev_path" "$prev_mode" "$sid" "$(now)" "$request" "$request_id" "$model" "$effort")"
-    log "풀 꽉 참 → queued"; exit 3
+    # model/effort 는 대기 시점 값. explicit* 가 false 면 재시도 때 봇 항목 model/effort 가 우선한다.
+    registry_write "$thread" "$(python3 -c 'import json,sys;a=sys.argv;r=a[7]=="1";print(json.dumps(dict(threadId=a[1],channelId=a[2],project=a[3],path=(a[8] if r else a[4]),worktreeMode=(a[9] if r else None),bot=(a[17] or None),status="queued",taskTitle=a[5],newWorktree=a[6]=="1",resume=r,sessionId=(a[10] if r else None),queuedAt=a[11],currentRequest=a[12],requestMessageId=a[13],model=a[14],effort=a[15],engine=a[16],explicitModel=a[18]!="",explicitEffort=a[19]!=""),ensure_ascii=False))' \
+      "$thread" "$channel" "$project" "$proj_path" "$title" "$new_wt" "$resume" "$prev_path" "$prev_mode" "$sid" "$(now)" "$request" "$request_id" "$model" "$effort" "$engine" "$sel_bot" "$sel_model" "$sel_effort")"
+    log "풀 꽉 참 ($engine) → queued"; exit 3
   fi
   (( rc == 0 )) || die "pool lease 실패 (rc=$rc)"
   leased=1
   registry_update "$thread" "threadId=$thread" "channelId=$channel" "project=$project" "projectPath=$proj_path" "bot=$bot" status=active "startedAt=$(now)" terminalHandle=
+fi
+# 봇 항목의 model/effort 는 --model/--effort 가 없고 재개가 아닐 때만 엔진 기본값보다 우선한다.
+mbot="$bot"; (( dry )) && mbot="$sel_bot"
+if (( ! resume )) && [[ -n "$mbot" ]]; then
+  [[ -n "$sel_model" ]] || { m="$(worker_field "$mbot" 3 || true)"; model="${m:-$model}"; }
+  [[ -n "$sel_effort" ]] || { m="$(worker_field "$mbot" 4 || true)"; effort="${m:-$effort}"; }
 fi
 
 # 4. 작업 디렉터리 (child worktree). 재개는 이전 경로 그대로.
@@ -120,6 +150,8 @@ print(json.dumps(dict(dmPolicy="allowlist",allowFrom=[],groups=groups,ackReactio
 prompt_file="$THREADS_DIR/$thread.prompt.md"
 (( dry )) && prompt_file="$(mktemp "${TMPDIR:-/tmp}/worker-prompt.XXXXXX")"
 scope_note=""; [[ -n "$write_dir" ]] && scope_note="- 쓰기 허용 범위: \`$work_path/$write_dir\` 아래만."
+finish_line="finish: \`$(shq "$ORCH_ROOT/bin/finish-worker.sh") $thread succeeded|failed|stopped\`"
+[[ "$engine" == claude ]] || finish_line="finish: 브리지가 처리한다 (\"종료\"·\"중단\"). 직접 호출하지 않는다."
 if (( resume )); then
 cat > "$prompt_file" <<EOF
 # 세션 재개
@@ -127,7 +159,7 @@ cat > "$prompt_file" <<EOF
 ownerUserId: $owner
 $(runtime_context)
 jarvisAppId: ${jarvis_app_id:-(없음)} / visionLoungeChatId: ${lounge:-(없음)}
-finish: \`$(shq "$ORCH_ROOT/bin/finish-worker.sh") $thread succeeded|failed|stopped\`
+$finish_line
 $scope_note
 ## 현재 사용자 요청
 ${request:-(없음. 필요한 지시는 스레드에서 사용자에게 확인한다.)}
@@ -146,7 +178,7 @@ $(runtime_context)
 - jarvisAppId: ${jarvis_app_id:-(없음)}
 - ownerUserId: $owner
 - visionLoungeChatId: ${lounge:-(없음)}
-- finish: \`$(shq "$ORCH_ROOT/bin/finish-worker.sh") $thread succeeded|failed|stopped\`
+- $finish_line
 $scope_note
 
 ## 현재 사용자 요청
@@ -162,11 +194,19 @@ fi
 effort_arg=""; [[ -n "$effort" ]] && effort_arg=" --effort $(shq "$effort")"
 presence="🔧 $project / $title"
 session_arg="--session-id $sid"; (( resume )) && session_arg="--resume $sid"
+if [[ "$engine" == grok ]]; then
+inner="$(runtime_exports grok) cd $(shq "$work_path") && print \$\$ > $(shq "$THREADS_DIR/$thread.pid") && DISCORD_STATE_DIR=$(shq "$sd") DISCORD_ACTIVITY_FILE=$(shq "$THREADS_DIR/$thread.activity") ORCA_THREAD_ID=$thread exec bun $(shq "$ORCH_ROOT/grok-worker/bridge.ts") $(shq "$THREADS_DIR/$thread.json")"
+else
 inner="$(runtime_exports) cd $(shq "$work_path") && print \$\$ > $(shq "$THREADS_DIR/$thread.pid") && DISCORD_STATE_DIR=$(shq "$sd") DISCORD_ACCESS_MODE=static DISCORD_ONLY_CHATS=$thread DISCORD_ACTIVITY_FILE=$(shq "$THREADS_DIR/$thread.activity") DISCORD_PRESENCE=$(shq "$presence") DISCORD_IGNORE_OTHER_BOT_MENTIONS=1 ORCA_THREAD_ID=$thread exec $(shq "$CLAUDE_BIN") --dangerously-skip-permissions $session_arg --model $(shq "$model")$effort_arg --name $(shq "$bot") $plugin --settings $(shq "$ORCH_ROOT/templates/progress-settings.json") --append-system-prompt-file $(shq "$ORCH_ROOT/roles/작업자.md") \"\$(cat $(shq "$prompt_file"))\""
+fi
 term_title="$bot $title"
+# 등록부 추가 필드: 엔진은 항상, 브리지 설정(grok)은 grok 일 때만
+reg_extra="$(python3 -c 'import json,sys;a=sys.argv;print(json.dumps(dict(engine=a[1],**(dict(guildId=a[2],ownerUserId=a[3],jarvisAppId=a[4],discordStateDir=a[5],rolesFile=a[6],ackEmoji=a[7],sandbox=a[8]) if a[1]=="grok" else {})),ensure_ascii=False))' \
+  "$engine" "$guild" "$owner" "$jarvis_app_id" "$sd" "$ORCH_ROOT/roles/작업자-grok.md" "$(route_get '["emojis"]["working"]' 2>/dev/null || true)" "$(route_get '["grokSandbox"]' 2>/dev/null || true)")"
 
 if (( dry )); then
   print -- "model=$model effort=$effort"
+  [[ "$engine" == claude ]] || { print -- "--- registry extra ---"; print -r -- "$reg_extra" | python3 -m json.tool --no-ensure-ascii; }
   print -- "--- access.json ($sd) ---"; print -r -- "$access" | python3 -m json.tool
   print -- "--- prompt ($prompt_file) ---"; cat "$prompt_file"
   print -- "--- orca terminal create ---"
@@ -176,13 +216,15 @@ fi
 
 # 8. 등록부를 먼저 active 로 (terminalHandle 은 비움). baseRef 는 자비스의 diff 기준.
 base_ref="$(git -C "$work_path" rev-parse HEAD 2>/dev/null || true)"
-registry_write "$thread" "$(python3 -c 'import json,sys;a=sys.argv;print(json.dumps(dict(threadId=a[1],channelId=a[2],project=a[3],path=a[4],projectPath=a[5],worktreeMode=a[6],bot=a[7],terminalHandle="",promptFile=a[8],status="active",startedAt=a[9],endedAt=None,taskTitle=a[10],model=a[11],effort=a[12],baseRef=a[13],sessionId=a[14],resumed=a[15]=="1",currentRequest=a[16],requestMessageId=a[17]),ensure_ascii=False))' \
-  "$thread" "$channel" "$project" "$work_path" "$proj_path" "$worktree_mode" "$bot" "$prompt_file" "$(now)" "$title" "$model" "$effort" "$base_ref" "$sid" "$resume" "$request" "$request_id")"
+registry_write "$thread" "$(python3 -c 'import json,sys;a=sys.argv;print(json.dumps(dict(threadId=a[1],channelId=a[2],project=a[3],path=a[4],projectPath=a[5],worktreeMode=a[6],bot=a[7],terminalHandle="",promptFile=a[8],status="active",startedAt=a[9],endedAt=None,taskTitle=a[10],model=a[11],effort=a[12],baseRef=a[13],sessionId=a[14],resumed=a[15]=="1",currentRequest=a[16],requestMessageId=a[17],**json.loads(a[18])),ensure_ascii=False))' \
+  "$thread" "$channel" "$project" "$work_path" "$proj_path" "$worktree_mode" "$bot" "$prompt_file" "$(now)" "$title" "$model" "$effort" "$base_ref" "$sid" "$resume" "$request" "$request_id" "$reg_extra")"
 
 # 9. 실행. 실패 경로 전체에서 등록부 failed + 풀 반납.
 state_created=1
 mkstate "$sd" "$bot" "$access"
-ensure_plugin "$work_path"
+[[ "$engine" != claude ]] || ensure_plugin "$work_path"
+# 이전 기동의 runtime.json 이 남아 있으면 ready 로 오판한다
+[[ "$engine" != grok ]] || rm -f "$THREADS_DIR/$thread.grok/runtime.json"
 out="$(orca terminal create --worktree "path:$work_path" --title "$term_title" --command "$inner" --json)" || die "orca terminal create 실패: $out"
 handle="$(json_get "$out" result.terminal.handle)" || die "terminal handle 없음: $out"
 registry_update "$thread" "terminalHandle=$handle"
@@ -195,6 +237,23 @@ if [[ -n "$tname" && "$tname" != 🔧* ]]; then
   discord_api "$bot" PATCH "/channels/$thread" "$(python3 -c 'import json,sys;print(json.dumps({"name":sys.argv[1][:100]}))' "🔧 $tname")" >/dev/null 2>&1 || true
 fi
 plugin_state=ok
+if [[ "$engine" == grok ]]; then
+  # 브리지가 게이트웨이에 붙으면 runtime.json status=ready. 40초 안에 안 되면 스레드에 알리고 풀을 반납한다 (설계 §6).
+  rt="$THREADS_DIR/$thread.grok/runtime.json"; gst=""
+  for i in {1..20}; do
+    gst="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("status",""))' "$rt" 2>/dev/null || true)"
+    [[ "$gst" == ready || "$gst" == failed ]] && break
+    sleep 2
+  done
+  if [[ "$gst" != ready ]]; then
+    ops_log "$bot" "⚠️ $bot Grok 브리지가 준비되지 않음 (${gst:-응답 없음}) — 스레드 $thread 정리함"
+    discord_api "$bot" POST "/channels/$thread/messages" "$(python3 -c 'import json,sys;print(json.dumps({"content":"⚠️ Grok 브리지가 준비되지 않았습니다 ("+sys.argv[1]+"). 작업자를 정리했습니다. 관리 세션에서 확인이 필요합니다.","allowed_mentions":{"parse":[]}}))' "${gst:-응답 없음}")" >/dev/null 2>&1 || true
+    p="$(cat "$THREADS_DIR/$thread.pid" 2>/dev/null || true)"
+    pid_is "$p" grok-worker/bridge.ts && kill -TERM "$p" 2>/dev/null || true
+    rm -f "$THREADS_DIR/$thread.pid"
+    die "Grok 브리지가 준비되지 않았습니다 (${gst:-응답 없음})"
+  fi
+else
 accept_prompts "$handle" 60 || warn "터미널이 기동 중 종료됨: $handle"
 if ! plugin_ready "$(cat "$THREADS_DIR/$thread.pid" 2>/dev/null)" "$handle" 40; then
   # 플러그인 자식이 없거나 배너에 "plugin not installed" 면 스레드 메시지를 못 받는다 → 터미널을 한 번 다시 띄운다 (같은 세션 ID, 프롬프트 재전달)
@@ -212,9 +271,10 @@ if ! plugin_ready "$(cat "$THREADS_DIR/$thread.pid" 2>/dev/null)" "$handle" 40; 
     discord_api "$bot" POST "/channels/$thread/messages" "$(python3 -c 'import json;print(json.dumps({"content":"⚠️ 작업자는 떴지만 Discord 연결이 안 됐습니다. 이 스레드의 메시지를 못 받습니다. 관리 세션에서 확인이 필요합니다.","allowed_mentions":{"parse":[]}}))')" >/dev/null 2>&1 || true
   fi
 fi
+fi
 mkdir -p "$ORCH_ROOT/runs/$project"
 print -- "- $(date +%H:%M) $( (( resume )) && print -n resumed || print -n spawned ) $bot thread=$thread title=\"$title\" worktree=$worktree_mode" >> "$ORCH_ROOT/runs/$project/$(date +%Y-%m-%d).md"
 disp="$(route_get "[\"botDisplay\"][\"$bot\"]" 2>/dev/null || print -- "$bot")"
 ops_log "$bot" "▶ $disp 배정 — $project · $title"
-print -- "bot=$bot display=$disp terminal=$handle plugin=$plugin_state"
+print -- "bot=$bot display=$disp terminal=$handle plugin=$plugin_state$( [[ "$engine" == claude ]] || print -n " engine=$engine" )"
 spawned=1

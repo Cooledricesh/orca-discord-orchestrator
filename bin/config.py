@@ -9,6 +9,7 @@ import sys
 
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
 ROLES = ("상담역", "접수원", "작업자", "리뷰어", "비전")
+ENGINES = ("claude", "grok")
 
 
 def absolute(value):
@@ -38,12 +39,33 @@ def load_routes():
         for key in ("stateRoot", "codexAuthFile"):
             if key in data and not isinstance(data[key], str):
                 raise ValueError(f"{key}: expected path string")
-        return data
     except FileNotFoundError:
         raise ValueError(f"설정 없음: {routes_path()} — python3 bin/setup.py init 먼저 실행") from None
     except (ValueError, OSError) as exc:
         # Do not echo JSON contents: local settings may contain sensitive values.
         raise ValueError(f"설정 JSON 형식/접근 오류: {routes_path()} ({type(exc).__name__})") from None
+    # 작업자 항목 오류는 위치만 알린다 (값은 출력하지 않는다).
+    for i, item in enumerate(data.get("bots", {}).get("workers", [])):
+        if isinstance(item, str):
+            continue
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            raise ValueError(f"bots.workers[{i}]: 봇 이름 문자열 또는 {{name, engine}} 객체 필요")
+        if item.get("engine", "claude") not in ENGINES:
+            raise ValueError(f"bots.workers[{i}].engine: {' | '.join(ENGINES)} 만 허용")
+        if any(not isinstance(item.get(k, ""), str) for k in ("model", "effort")):
+            raise ValueError(f"bots.workers[{i}]: model/effort 는 문자열")
+    return data
+
+
+def worker_entries(data):
+    """bots.workers → [{name, engine, model, effort}]. 문자열 항목은 claude 엔진."""
+    result = []
+    for item in data.get("bots", {}).get("workers", []):
+        if isinstance(item, str):
+            item = {"name": item}
+        result.append({"name": item.get("name", ""), "engine": item.get("engine", "claude"),
+                       "model": item.get("model", ""), "effort": item.get("effort", "")})
+    return result
 
 
 def role_enabled(data, role):
@@ -63,7 +85,7 @@ def enabled_bots(data):
         if not role_enabled(data, role):
             continue
         if role == "작업자":
-            names = data.get("bots", {}).get("workers", [])
+            names = [e["name"] for e in worker_entries(data)]
         elif role == "비전":
             names = [r.get("bot", "") for r in data.get("routes", {}).values() if r.get("kind") == "lounge"]
         else:
@@ -107,11 +129,16 @@ def main():
             print(f"export {key}={shlex.quote(value)}")
     elif verb == "enabled":
         return 0 if role_enabled(load_routes(), args[0]) else 1
+    elif verb == "workers":
+        # 셸용: name<TAB>engine<TAB>model<TAB>effort. 인자로 엔진을 주면 그 엔진만.
+        for e in worker_entries(load_routes()):
+            if not args or e["engine"] == args[0]:
+                print("\t".join((e["name"], e["engine"], e["model"], e["effort"])))
     elif verb == "get":
         value = query(load_routes(), args[0])
         print(json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else "" if value is None else value)
     else:
-        raise ValueError("usage: config.py shell|get <expression>|enabled <role>")
+        raise ValueError("usage: config.py shell|get <expression>|enabled <role>|workers [engine]")
     return 0
 
 

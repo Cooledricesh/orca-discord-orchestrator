@@ -21,7 +21,7 @@ import threading
 import time
 import urllib.request
 
-from config import load_routes, root_path, routes_path, runtime_paths, role_enabled
+from config import load_routes, root_path, routes_path, runtime_paths, role_enabled, worker_entries
 
 SERVICES = ("상담역", "접수원", "리뷰어")
 JOBS = ("sweep", "leads-check", "접수원-restart", "jarvis")
@@ -93,7 +93,10 @@ def impacts(files):
             jobs.add(name)
     if any(f.startswith(("roles/작업자", "plugin/", "templates/")) for f in files):
         notes.append("실행 중인 마크의 대화·플러그인은 유지합니다. 새 지침/플러그인은 다음 새 작업부터 적용됩니다.")
-    if any(f.startswith("codex-worker/") or f == "roles/비전.md" for f in files):
+    if any(f.startswith(("grok-worker/", "bridge-kit/")) for f in files):
+        notes.append("실행 중인 그록 작업자의 브리지는 유지합니다. 변경은 다음 새 작업부터 적용됩니다.")
+    # bridge-kit 은 비전(codex-worker)도 쓴다.
+    if any(f.startswith(("codex-worker/", "bridge-kit/")) or f == "roles/비전.md" for f in files):
         if role_enabled(load_routes(), "비전"):
             raise ValueError("활성 비전 변경은 세션 보존 방식 확인 후 별도 적용이 필요합니다.")
         notes.append("비전은 비활성입니다. 다음 기동부터 변경을 사용합니다.")
@@ -186,8 +189,10 @@ def run(argv, cwd=None, timeout=300):
 def verify(source):
     # Use the trusted operator's verification entry point, running in the candidate.
     run(["python3", "-m", "unittest", "discover", "-s", "tests"], cwd=source, timeout=600)
-    for folder in ("codex-worker", "jarvis", "plugin/discord-orca"):
+    for folder in ("codex-worker", "bridge-kit", "grok-worker", "jarvis", "plugin/discord-orca"):
         cwd = Path(source) / folder
+        if folder == "bridge-kit" and not (cwd / "package.json").exists():
+            continue  # 패키지가 아니면 codex-worker·grok-worker 의 typecheck/test 가 검증한다
         run(["bun", "install", "--ignore-scripts"], cwd=cwd)
         if folder != "plugin/discord-orca":
             run(["bun", "run", "typecheck"], cwd=cwd)
@@ -264,7 +269,7 @@ def notify(job):
     if not job.get("chat"):
         return
     cfg = load_routes()
-    allowed = [cfg.get("bots", {}).get("상담역"), *cfg.get("bots", {}).get("workers", [])]
+    allowed = [cfg.get("bots", {}).get("상담역"), *(e["name"] for e in worker_entries(cfg))]
     if job["bot"] not in allowed:
         raise ValueError("결과 보고 봇이 현재 설정에 없습니다")
     path = Path(runtime_paths()["BOTS_DIR"]) / (job["bot"] + ".env")
@@ -305,8 +310,8 @@ def execute(code):
                     run(["git", "-C", root_path(), "merge", "--ff-only", job["target"]])
                     job["promoted"] = True
                     save(job_path(code), job)
-                for folder in ("jarvis", "codex-worker", "plugin/discord-orca"):
-                    if any(f.startswith(folder + "/") for f in job["files"]):
+                for folder in ("jarvis", "codex-worker", "bridge-kit", "grok-worker", "plugin/discord-orca"):
+                    if any(f.startswith(folder + "/") for f in job["files"]) and (root_path() / folder / "package.json").exists():
                         step("dependencies:" + folder, lambda folder=folder: run(["bun", "install", "--ignore-scripts"], cwd=root_path() / folder))
             for name in job["launchd"]:
                 step("launchd:" + name, lambda name=name: reload_launchd(name, job_path(code).parent / "backup"))

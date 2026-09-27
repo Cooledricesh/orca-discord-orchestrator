@@ -27,9 +27,9 @@ test('legacy unpinned reviewer keeps its existing session until explicit change'
 test('review trust derives advisor and workers only', () => {
   const dir = mkdtempSync(join(tmpdir(), 'jarvis-trust-'))
   try {
-    for (const name of ['advisor', 'mark', 'happy']) writeFileSync(join(dir, `${name}.env`), `DISCORD_APP_ID=${name}-id\n`)
-    const cfg: Routes = { routes: {}, generalChannelId: 'general', guildId: 'guild', ownerUserId: 'owner', bots: { 상담역: 'advisor', workers: ['mark'], 접수원: 'happy' } }
-    expect([...loadTrustedBots(cfg, dir).keys()]).toEqual(['advisor-id', 'mark-id'])
+    for (const name of ['advisor', 'mark', 'grok', 'happy']) writeFileSync(join(dir, `${name}.env`), `DISCORD_APP_ID=${name}-id\n`)
+    const cfg: Routes = { routes: {}, generalChannelId: 'general', guildId: 'guild', ownerUserId: 'owner', bots: { 상담역: 'advisor', workers: ['mark', { name: 'grok', engine: 'grok' }], 접수원: 'happy' } }
+    expect([...loadTrustedBots(cfg, dir).keys()]).toEqual(['advisor-id', 'mark-id', 'grok-id'])
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 

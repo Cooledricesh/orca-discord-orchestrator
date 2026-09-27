@@ -1,17 +1,19 @@
 #!/bin/zsh
-# 작업자 봇 풀. lease <threadId> | release <threadId> | status
+# 작업자 봇 풀. lease <threadId> [engine] [bot] | release <threadId> | status
 # state/pool.json 을 fcntl.flock(state/pool.lock) 으로 원자적으로 갱신한다.
-# lease: 봇 이름 출력 (exit 0), 풀이 꽉 차면 exit 3. 같은 threadId 가 이미 빌린 봇이 있으면 그 봇을 그대로 돌려준다.
+# lease: 봇 이름 출력 (exit 0), 그 엔진(기본 claude)의 봇이 모두 사용 중이면 exit 3 (다른 엔진 봇이 비어 있어도).
+# bot 을 주면 그 봇만 빌린다. 같은 threadId 가 이미 빌린 봇이 있으면 그 봇을 그대로 돌려준다.
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-cmd="${1:-status}"; tid="${2:-}"
-[[ "$cmd" == "status" || -n "$tid" ]] || die "usage: pool.sh lease <threadId> | release <threadId> | status"
+cmd="${1:-status}"; tid="${2:-}"; engine="${3:-claude}"; want_bot="${4:-}"
+[[ "$cmd" == "status" || -n "$tid" ]] || die "usage: pool.sh lease <threadId> [engine] [bot] | release <threadId> | status"
 
-python3 - "$POOL_FILE" "$POOL_LOCK" "$cmd" "$tid" "$(worker_bots | tr '\n' ',')" <<'PY'
+python3 - "$POOL_FILE" "$POOL_LOCK" "$cmd" "$tid" "$engine" "$want_bot" "$(worker_entries | cut -f1,2)" <<'PY'
 import json, sys, os, fcntl, datetime
-pool_file, lock_file, cmd, tid, bots = sys.argv[1:6]
-bots = [b for b in bots.split(",") if b]
+pool_file, lock_file, cmd, tid, engine, want_bot, entries = sys.argv[1:8]
+engines = dict(l.split("\t", 1) for l in entries.splitlines() if l)
+bots = list(engines)
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 def read_pool():
     try:
@@ -21,10 +23,15 @@ def read_pool():
 
 if cmd == "status":
     pool = read_pool()
-    print(f"{sum(bool(pool.get(b, {}).get('threadId')) for b in bots)}/{len(bots)} 사용 중")
+    busy = lambda b: bool(pool.get(b, {}).get("threadId"))
+    head = f"{sum(map(busy, bots))}/{len(bots)} 사용 중"
+    kinds = list(dict.fromkeys(engines.values()))
+    if len(kinds) > 1:
+        head += " (" + " · ".join(f"{k} {sum(busy(b) for b in bots if engines[b] == k)}/{sum(engines[b] == k for b in bots)}" for k in kinds) + ")"
+    print(head)
     for b in bots:
         e = pool.get(b, {})
-        print(f"  {b}\t{e.get('threadId') or '-'}\t{e.get('since') or ''}")
+        print(f"  {b}\t{engines[b]}\t{e.get('threadId') or '-'}\t{e.get('since') or ''}")
     sys.exit(0)
 
 os.makedirs(os.path.dirname(pool_file), exist_ok=True)
@@ -36,8 +43,9 @@ with open(lock_file, "w") as lk:
     # Preserve retired active leases until explicitly released; never reallocate them.
     rc = 0
     if cmd == "lease":
-        held = [b for b in bots if pool[b]["threadId"] == tid]
-        free = [b for b in bots if pool[b]["threadId"] is None]
+        cands = [b for b in bots if engines[b] == engine and (not want_bot or b == want_bot)]
+        held = [b for b in cands if pool[b]["threadId"] == tid]
+        free = [b for b in cands if pool[b]["threadId"] is None]
         if held:
             print(held[0])
         elif free:

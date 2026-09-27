@@ -11,17 +11,19 @@ import sys
 import time
 import urllib.request
 
-from config import load_routes, root_path, routes_path, runtime_paths, role_enabled
+from config import load_routes, root_path, routes_path, runtime_paths, role_enabled, worker_entries
 from failure_hook import read_json, save
 
-ROLES = {"프라이데이": "상담역", "해피": "접수원", "마크": "작업자", "마크1": "작업자", "자비스": "리뷰어"}
+# 고정 별칭. 작업자 봇 이름(마크1, 그록1 …)은 routes.json bots.workers 에서 읽는다 (roles()).
+ROLES = {"프라이데이": "상담역", "해피": "접수원", "마크": "작업자", "그록": "grok작업자", "자비스": "리뷰어"}
 CLAUDE_MODELS = ("opus", "sonnet", "haiku", "fable")
+GROK_EFFORTS = ("", "low", "medium", "high")
 HELP = ("프라이데이 DM 전용 · 모델 호출 없이 처리\n"
         "`!모델` 설정 조회 / `!모델 목록` 선택지\n"
         "`!모델 <봇> <모델> [effort]` 변경 제안\n"
         "`!모델 확인 <코드>` 적용 / `!모델 취소` 취소\n"
         "예: `!모델 해피 sonnet medium`\n"
-        "Claude 봇은 Claude 모델만, 자비스는 Codex 모델만 선택 가능합니다. "
+        "Claude 봇은 Claude 모델만, 그록 봇은 `grok models` 목록의 모델만, 자비스는 Codex 모델만 선택 가능합니다. 엔진은 바꿀 수 없습니다. "
         "모델 변경으로 계정 사용량 제한이 해제되지는 않습니다.")
 
 
@@ -32,6 +34,33 @@ def directory():
 def catalog():
     path = Path(runtime_paths()["STATE_DIR_ROOT"]) / "jarvis/codex-home/models_cache.json"
     return {m["slug"]: m for m in read_json(path).get("models", []) if isinstance(m.get("slug"), str)}
+
+
+def roles(cfg):
+    """봇 이름 → 역할. 그록 엔진 작업자는 grok작업자 (models.grok작업자 / grok작업자Effort)."""
+    result = dict(ROLES)
+    for entry in worker_entries(cfg):
+        result[entry["name"]] = "grok작업자" if entry["engine"] == "grok" else "작업자"
+    return result
+
+
+def enabled(cfg, role):
+    if role == "grok작업자":
+        return role_enabled(cfg, "작업자") and any(e["engine"] == "grok" for e in worker_entries(cfg))
+    return role_enabled(cfg, role)
+
+
+def grok_models():
+    """`grok models` 출력의 `  * id (default)` / `  - id` 줄을 읽는다. 실패하면 ValueError."""
+    try:
+        out = subprocess.run([os.environ.get("GROK_BIN") or "grok", "models"], capture_output=True, text=True,
+                             timeout=30, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        out = None
+    found = [m.group(1) for m in re.finditer(r"^\s*[*-]\s+(\S+)", out.stdout if out else "", re.M)]
+    if not out or out.returncode or not found:
+        raise ValueError("Grok 모델 목록(`grok models`)을 읽지 못했습니다. 관리 터미널에서 grok 설치·`grok login` 상태를 확인하세요.")
+    return found
 
 
 def selection(cfg, role):
@@ -60,22 +89,29 @@ def validate(role, model, effort):
             raise ValueError("default 모델은 effort도 default로 지정하세요.")
         if effort and effort not in levels:
             raise ValueError("선택한 Codex 모델이 지원하지 않는 effort입니다. `!모델 목록`을 확인하세요.")
+    elif role == "grok작업자":
+        if model and model not in grok_models():
+            raise ValueError("그록 봇은 Grok 전용입니다: `!모델 목록`의 Grok 모델 또는 default. Claude로 엔진을 바꾸는 기능은 아닙니다.")
+        if effort not in GROK_EFFORTS:
+            raise ValueError("Grok effort: low / medium / high / default")
     else:
         if model not in CLAUDE_MODELS:
-            raise ValueError("프라이데이·해피·마크는 Claude 전용입니다: opus / sonnet / haiku / fable. GPT로 엔진을 바꾸는 기능은 아닙니다.")
+            raise ValueError("프라이데이·해피·마크는 Claude 전용입니다: opus / sonnet / haiku / fable. GPT·Grok으로 엔진을 바꾸는 기능은 아닙니다.")
         if effort not in ("", "low", "medium", "high", "xhigh", "max"):
             raise ValueError("Claude effort: low / medium / high / xhigh / max / default")
 
 
 def description(role):
-    if role == "작업자":
-        return "작업자 공통 기본값만 변경합니다. 실행 중·대기열·이전 세션 재개 작업은 유지하며 다음 새 작업부터 적용합니다."
+    if role in ("작업자", "grok작업자"):
+        return ("그록 " if role == "grok작업자" else "") + "작업자 공통 기본값만 변경합니다. 실행 중·대기열·이전 세션 재개 작업은 유지하며 다음 새 작업부터 적용합니다."
     return "해당 봇을 재시작합니다. 진행 중 응답이 끊길 수 있고, 새 모델로 새 대화 컨텍스트를 시작합니다."
 
 
 def report(cfg, state):
     lines = ["설정된 기본 모델 (실제 응답 성공/사용량 상태와는 별개):"]
-    for name in ("프라이데이", "해피", "마크", "자비스"):
+    for name in ("프라이데이", "해피", "마크", "그록", "자비스"):
+        if name == "그록" and not enabled(cfg, "grok작업자"):
+            continue
         model, effort = selection(cfg, ROLES[name])
         lines.append(f"• {name}: {model or 'CLI 기본값'} / effort={effort or 'CLI 기본값'}")
     if state.get("job"):
@@ -110,6 +146,11 @@ def request(event):
         if args[1:] == ["목록"]:
             rows = ["Claude: " + ", ".join(CLAUDE_MODELS) + " (effort: low/medium/high/xhigh/max/default)", "Codex (로컬 카탈로그; 실제 계정 이용 가능 여부는 실행 시 확인):"]
             rows += [k + ": " + "/".join(x["effort"] for x in v.get("supported_reasoning_levels", [])) for k, v in catalog().items()]
+            if enabled(cfg, "grok작업자"):
+                try:
+                    rows.append("Grok: " + ", ".join(grok_models()) + " (effort: low/medium/high/default)")
+                except ValueError as exc:
+                    rows.append("Grok: " + str(exc))
             rows.append("자비스 default default: CLI 기본값으로 복원")
             return {"text": "\n".join(rows)[:1900]}
         if args[1:] == ["취소"]:
@@ -129,10 +170,10 @@ def request(event):
             state.pop("pending")
             save(directory() / "state.json", state)
             return {"text": "변경을 접수했습니다. 적용 결과를 이 DM에 알립니다.", "job": args[2]}
-        if len(args) not in (3, 4) or args[1] not in ROLES:
+        if len(args) not in (3, 4) or args[1] not in roles(cfg):
             return {"text": HELP}
-        role = ROLES[args[1]]
-        if not role_enabled(cfg, role):
+        role = roles(cfg)[args[1]]
+        if not enabled(cfg, role):
             return {"text": "비활성 역할입니다. 모델 명령으로 역할을 활성화하지는 않습니다."}
         if job.get("status") in ("queued", "running"):
             return {"text": "모델 변경을 적용 중입니다. `!모델`로 결과를 확인하세요."}
@@ -187,7 +228,7 @@ def apply_job(code):
                 return
             cfg = load_routes()
             if (cfg.get("models") != job["baseline"] or time.time() > job["expires"]
-                    or cfg.get("ownerUserId") != job["author"] or not role_enabled(cfg, job["role"])):
+                    or cfg.get("ownerUserId") != job["author"] or not enabled(cfg, job["role"])):
                 job.update(status="failed", result="설정/소유자 변경 또는 제안 만료로 취소됨. 다시 제안하세요.")
                 save(directory() / "state.json", state)
                 return
@@ -201,7 +242,7 @@ def apply_job(code):
                 cfg["models"]["리뷰어"]["revision"] = code
             save(routes_path(), cfg)
         try:
-            if job["role"] != "작업자":
+            if job["role"] not in ("작업자", "grok작업자"):
                 command = ["zsh", str(root_path() / "bin/model-restart.sh"), job["role"]]
                 result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                         stderr=subprocess.PIPE, text=True, timeout=180, check=False)
@@ -210,7 +251,7 @@ def apply_job(code):
             status = "done"
             message = ("✅ 모델 설정 적용: " + job["role"] + " → " + (job["model"] or "CLI 기본값")
                        + " / " + (job["effort"] or "CLI 기본 effort") + "\n"
-                       + ("다음 새 작업부터 적용됩니다. 기존 작업/대기열/재개 세션은 유지합니다." if job["role"] == "작업자"
+                       + ("다음 새 작업부터 적용됩니다. 기존 작업/대기열/재개 세션은 유지합니다." if job["role"] in ("작업자", "grok작업자")
                           else "봇 프로세스 재시작을 확인했습니다. 모델 응답 성공·사용량 복구까지 확인한 것은 아닙니다."))
         except Exception as error:
             status = "failed"

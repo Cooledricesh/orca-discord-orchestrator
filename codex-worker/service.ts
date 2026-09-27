@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { SocketRPC } from './rpc.ts'
 import { Once, InputRouter, type Envelope, type Ledger } from './core.ts'
 import { DiscordPort, toolSpecs } from './discord.ts'
+import { ProgressCard } from '../bridge-kit/progress.ts'
 import { requiredJSON, PersistenceError, readRegistry, type Runtime, writeJSON, runtimePaths } from './storage.ts'
 
 const registryFile = process.argv[2]
@@ -36,10 +37,14 @@ let activityAt = 0
 function activity(force = false) { if (!force && Date.now() - activityAt < 1000) return; activityAt = Date.now(); writeFileSync(activityFile, new Date().toISOString()) }
 let savedRuntime = ''
 function saveRuntime() { runtime.activeTurns = Object.fromEntries(active); const value = JSON.stringify(runtime); if (value === savedRuntime) return; writeJSON(paths.runtime, { ...runtime, updatedAt: Date.now() }); savedRuntime = value }
-/** Progress card per main-thread turn: `⏳ N · <item>` posted to the chat the input came from, edited with a throttle, deleted at turn end. Bridge-only; the model never sees it. */
-const PROGRESS_THROTTLE_MS = 5000
-let progressChat = record.channelId, progress: { chat: string; messageId: string; n: number; lastEdit: number; pending?: string; timer?: ReturnType<typeof setTimeout> } | undefined
+/** Progress card per main-thread turn (bridge-kit): posted to the chat the input came from. Bridge-only; the model never sees it. */
+let progressChat = record.channelId
 let pendingChat: string | undefined
+const progress = new ProgressCard({
+  post: async (chat, content) => (await discord.send(content, chat)).id,
+  edit: async (chat, id, content) => { const ch = await discord.channel(chat); await ch.messages.edit(id, { content, allowedMentions: { parse: [] } }) },
+  remove: deleteMessage,
+}, { onChange: ref => { runtime.progress = ref; saveRuntime() } })
 function describeItem(item: any): string | undefined {
   const rel = (p: string) => p.startsWith(record.path + '/') ? p.slice(record.path.length + 1) : p
   switch (item?.type) {
@@ -53,30 +58,8 @@ function describeItem(item: any): string | undefined {
     default: return undefined   // agentMessage/reasoning/plan/dynamicToolCall(discord_*) are visible or silent by design
   }
 }
-async function progressStep(sub: boolean, text: string) {
-  const line = (sub ? '↳ ' : '') + text
-  const body = (n: number) => `⏳ ${n} · ${line.length > 120 ? line.slice(0, 119) + '…' : line}`
-  if (!progress) {
-    progress = { chat: progressChat, messageId: '', n: 1, lastEdit: Date.now() }
-    try { const m = await discord.send(body(1), progressChat); progress.messageId = m.id; runtime.progress = { chat: progress.chat, messageId: m.id }; saveRuntime() }
-    catch { progress = undefined }
-    return
-  }
-  const p = progress; p.n++; p.pending = body(p.n)
-  if (p.timer) return
-  const wait = Math.max(0, PROGRESS_THROTTLE_MS - (Date.now() - p.lastEdit))
-  p.timer = setTimeout(async () => {
-    p.timer = undefined; if (progress !== p || !p.pending || !p.messageId) return
-    const content = p.pending; p.pending = undefined; p.lastEdit = Date.now()
-    try { const ch = await discord.channel(p.chat); await ch.messages.edit(p.messageId, { content, allowedMentions: { parse: [] } }) } catch {}
-  }, wait)
-}
-async function progressEnd() {
-  const p = progress; progress = undefined; runtime.progress = undefined; saveRuntime()
-  if (!p) return
-  if (p.timer) clearTimeout(p.timer)
-  if (p.messageId) await deleteMessage(p.chat, p.messageId)
-}
+const progressStep = (sub: boolean, text: string) => progress.step(progressChat, (sub ? '↳ ' : '') + text)
+const progressEnd = () => progress.end()
 async function deleteMessage(chat: string, id: string) { try { const ch = await discord.channel(chat); await ch.messages.delete(id) } catch {} }
 function failure(error: unknown) {
   const category = error instanceof Error ? error.name : 'Error'

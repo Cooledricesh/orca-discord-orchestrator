@@ -12,12 +12,12 @@
 | `bin/lead-up.sh 상담역` / `접수원` | 상시 Claude 봇 기동. `DRY=1`이면 실행 내용만 출력 |
 | `bin/leads-check.sh [--restart <역할>]` | 활성 상시 역할 복구, 플러그인 누락 감시. restart는 새 컨텍스트 |
 | `bin/open-thread.sh <봇> <채널> <메시지ID 또는 new> <제목 또는 @file> [본문 또는 @file]` | Discord 스레드 생성 |
-| `bin/spawn-worker.sh <채널> <스레드> [--title t 또는 @file] [--request-file f] [--resume] [--dry-run]` | 작업 전용 worktree 스폰. exit 3이면 queued |
+| `bin/spawn-worker.sh <채널> <스레드> [--title t 또는 @file] [--request-file f] [--engine claude 또는 grok] [--bot <봇>] [--resume] [--dry-run]` | 작업 전용 worktree 스폰. 그 엔진 풀이 차면 exit 3 (queued) |
 | `bin/finish-worker.sh <스레드> succeeded 또는 failed 또는 stopped` | 작업 정리·봇 반환·대기열 재시도 |
 | `bin/stop-worker.sh <스레드>` | stopped로 정리 |
 | `bin/retry-queued.sh <스레드>` | 대기 작업 재시도 |
 | `bin/sweep.sh` | 종료된 터미널·30분 이상 유휴 작업 정리·고아 lease 회수 |
-| `bin/pool.sh status` / `bin/status.sh` | 풀 / 전체 상태 확인 |
+| `bin/pool.sh status` / `bin/status.sh` | 풀(봇·엔진·스레드) / 전체 상태 확인 |
 | `bin/jarvis-up.sh [--fg]` | 자비스 기동. --fg는 launchd용 |
 | `bin/jarvis-down.sh` / `bin/jarvis-restart.sh` | 자비스 종료 / 설정을 다시 읽고 재시작 |
 | `bin/vision.sh fresh 또는 resume 또는 attach 또는 stop 또는 status` | 활성화했을 때만 쓰는 비전 제어 |
@@ -44,6 +44,27 @@ python3 bin/operations.py retry <실패한계획ID>
 실행기는 별도 프로세스와 저장된 코드 복사본으로 동작하므로 자기 재시작이나 운영 코드 교체로 끊기지 않는다. `state/operations/<id>/job.json`에 단계·반영 여부·결과, `apply.log`에 검증 로그, `backup/`에 이전 plist를 저장한다. 중복 적용은 거부한다. 코드 반영 후 재시작 실패는 `promoted: true, status: failed`이며 같은 계획을 retry하면 완료 단계를 반복하지 않는다. 커밋이나 설정이 달라졌으면 새 계획이 필요하다. 코드 롤백은 기록된 이전 커밋을 참고해 revert 커밋으로 만들어 같은 절차로 적용한다.
 
 launchd는 지정한 기존 job만 재등록하고 설치된 환경변수를 보존한다. 실행 중인 sweep/감시 job은 중단하지 않는다. 재등록 검증 실패 시 기존 plist와 등록 복원을 시도한다. `--chat` 또는 작업 스레드가 있으면 결과를 그 대화에 보고하며, 전송 실패도 `reported: false`로 남는다. 상태 확인은 모델 응답·사용량 복구까지 보장하지 않는다. 기존 마크는 강제 재시작하지 않고 새 작업부터 갱신된 지침/플러그인을 사용한다.
+
+### 그록 작업자 추가 (선택)
+
+Grok 엔진 작업자는 마크와 같은 스레드·worktree·풀 흐름을 쓰고 프로세스만 `grok-worker/bridge.ts`로 바뀐다 ([설계](grok-worker.md)).
+
+전제 조건:
+- 관리 터미널에서 `grok login`(grok.com) 완료. `grok models` 첫 줄이 `You are logged in …`이어야 한다. 인증 파일 내용은 출력하지 않는다.
+- `cd grok-worker && bun install --ignore-scripts`
+
+절차:
+1. Discord Developer Portal에서 새 앱(예: 그록1)을 만들고 Bot의 **Message Content Intent**를 켠다.
+2. `routes.json`의 `bots.workers`에 `{"name": "그록1", "engine": "grok"}`를 추가한다. 봇별 `model`·`effort`를 줄 수 있다. 기본값은 `models.grok작업자`·`models.grok작업자Effort`.
+3. `python3 bin/setup.py bot-env 그록1` (직접 연 터미널)
+4. `python3 bin/setup.py invites`로 받은 URL로 초대한다. 권한은 마크와 같다.
+5. `python3 bin/setup.py doctor`로 grok 실행 파일·로그인·bun·`grok-worker/node_modules`를 확인한다.
+6. 새 작업 봇 목록은 접수원 재시작 없이 다음 스폰부터 적용된다. 자비스가 그록의 검수 브리프를 신뢰하려면 `jarvis-restart.sh`가 필요하다.
+
+해피에게 "그록으로" 요청하면 `--engine grok`으로 배정한다. 기본은 Claude다. `!모델 그록1 <모델> [effort]`는 `grok models` 목록의 모델만 허용하고 그록 공통 기본값만 바꾼다.
+
+로그인 만료: 스레드에 `⛔ Grok 로그인이 만료됐습니다` 안내가 올라오고 `status.sh`가 ⛔로 표시한다. 관리 터미널에서 `grok login` 후 같은 메시지를 스레드에 다시 보내면 된다. 브리지는 재기동하지 않아도 된다.
+샌드박스는 기본으로 끈다(마크와 같은 수준). `routes.json`의 `grokSandbox`에 프로필 이름을 넣으면 `--sandbox <이름>`을 붙인다. 프로필은 `~/.grok/sandbox.toml`에 직접 추가한다 (`doctor`가 필요한 항목을 안내한다). 오케스트레이터 자체 작업(운영 적용)은 샌드박스에서 동작하지 않는다.
 
 ### 기존 설정 작업
 
@@ -83,8 +104,8 @@ Discord 플러그인이 수신 즉시 처리하므로 Claude API 사용량 제�
 
 effort 생략 시 기존 설정 유지, `default`이면 CLI 기본값. 자비스의 `default default`는 모델과 effort 모두 기본값으로 복원한다.
 프라이데이·해피는 해당 세션을 재시작하므로 진행 중 응답/컨텍스트가 끊길 수 있다. 자비스도 재시작하고 다음 요청을 새 Codex 대화로 시작하되 이전 기록은 보존한다.
-마크는 작업자 공통 기본값만 변경하며 실행 중·이미 대기열에 들어간 작업·이전 세션 재개 설정은 바꾸지 않는다.
-Claude 봇은 Claude 모델만, 자비스는 Codex 모델만 선택할 수 있다. 모델 변경은 계정 한도를 해제하지 않는다.
+마크는 작업자 공통 기본값만 변경하며 실행 중·이미 대기열에 들어간 작업·이전 세션 재개 설정은 바꾸지 않는다. 그록 봇(`!모델 그록1 …` 또는 `!모델 그록 …`)은 `grok작업자` 공통 기본값을 같은 방식으로 바꾼다.
+Claude 봇은 Claude 모델만, 그록 봇은 `grok models` 목록의 모델만, 자비스는 Codex 모델만 선택할 수 있다. 모델 변경은 계정 한도를 해제하지 않는다.
 
 구현: `plugin/discord-orca/model-control.ts` → `bin/model_control.py` → 확인 후 분리 프로세스에서 `bin/model-restart.sh`.
 모델/effort 이외의 설정은 보존하고 직전 routes를 `state/model-control/routes-before.json`에 백업한다.

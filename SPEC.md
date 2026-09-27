@@ -1,6 +1,6 @@
 # 오케스트레이터 설계
 
-4봇 기본 구성: 프라이데이(기획), 해피(접수), 마크1(작업), 자비스(검수). 비전은 선택 사항이다. 봇 하나는 연결 프로세스 하나에 대응한다. 프라이데이·해피·마크는 Claude Code, 자비스는 Codex exec, 비전은 Codex app-server로 고정되어 있다. 모델 이름만으로 엔진이 바뀌지 않는다.
+4봇 기본 구성: 프라이데이(기획), 해피(접수), 마크1(작업), 자비스(검수). 비전은 선택 사항이다. 봇 하나는 연결 프로세스 하나에 대응한다. 프라이데이·해피·마크는 Claude Code, 자비스는 Codex exec, 비전은 Codex app-server로 고정되어 있다. 선택형 그록 작업자는 Grok CLI(`grok-worker/bridge.ts` 브리지)로 동작한다. 작업자 봇의 엔진은 `bots.workers` 항목에 고정되며(문자열 = claude, `{name, engine}`), 모델 이름이나 `!모델`로 엔진이 바뀌지 않는다.
 
 ## 수신과 컨텍스트
 
@@ -9,6 +9,7 @@
 | 상담역 | 기획 채널·하위 스레드, 소유자 DM | 상시 Claude 세션. 재기동은 새 세션 |
 | 접수원 | 프로젝트 최상위, active 작업자가 없는 스레드, 운영 채널 | 상시 Claude 세션. 자동 운영 시 매일 04:00 초기화 |
 | 작업자 | 배정 스레드의 소유자 입력 | 스레드별 Claude 세션 + 별도 Git worktree |
+| 작업자(Grok) | 배정 스레드의 소유자 입력 | 스레드별 grok 세션(브리지) + 별도 Git worktree |
 | 리뷰어 | 허용 채널에서 소유자 또는 활성 상담역·작업자의 리뷰어 멘션 | Discord chat별 Codex 세션 |
 | 비전 | 전용 라운지와 하위 스레드의 소유자 입력 | 라운지 전체가 단일 Codex 세션 |
 
@@ -19,10 +20,10 @@ Claude 플러그인은 `access.json`의 소유자 allowlist와 채널 목록에 
 ## 작업 생성과 종료
 
 1. 해피 또는 상담역이 요청 파일과 제목 파일을 만들고 `open-thread.sh`로 스레드를 연다.
-2. `spawn-worker.sh`가 스레드 잠금 아래에서 봇을 대여한다. 풀이 차 있으면 `queuedAt`과 요청을 기록하고 exit 3으로 끝난다.
+2. `spawn-worker.sh`가 스레드 잠금 아래에서 봇을 대여한다. 대여는 엔진별(`--engine claude|grok`, 기본 claude)이며 그 엔진의 풀이 차 있으면 다른 엔진 봇이 비어 있어도 `queuedAt`·엔진·요청을 기록하고 exit 3으로 끝난다. 대기열은 같은 엔진 봇이 반납될 때 재시도한다.
 3. 새 작업마다 `task-<threadId>-<sessionId 일부>` 이름의 Orca child worktree를 생성한다. 기준은 원본 저장소의 현재 HEAD 커밋이다. 원본 미커밋 변경을 자동으로 가져오지 않는다.
 4. Git 루트·공통 Git 저장소·원본과 다른 경로를 검증한다. 실패하면 작업자를 띄우지 않고 봇을 반환한다. 터미널 생성 실패 때도 실패 등록과 반환을 수행하며 생성된 worktree는 보존한다.
-5. project 스코프 플러그인 설치 후 새 Orca 터미널에 경로·수신 범위·역할 프롬프트를 전달한다. 초기 플러그인 연결 확인에 실패하면 한 번 재시도하고 경고한다.
+5. project 스코프 플러그인 설치 후 새 Orca 터미널에 경로·수신 범위·역할 프롬프트를 전달한다. 초기 플러그인 연결 확인에 실패하면 한 번 재시도하고 경고한다. 그록은 플러그인 대신 브리지를 띄우고 `state/threads/<id>.grok/runtime.json`이 ready가 될 때까지 기다린다. 준비되지 않으면 스레드에 알리고 봇을 반환한다. 브리지는 격리 HOME으로 grok을 실행해 Claude 플러그인·MCP를 불러오지 않는다 ([설계](docs/grok-worker.md)).
 6. 결과 보고 후에도 세션을 유지한다. 종료 지시 또는 sweep의 30분 유휴 판정으로 스레드 보관·터미널 종료·봇 반환과 대기열 재시도를 수행한다.
 
 대기열은 `queuedAt` 우선으로 정렬한다. sweep은 스폰 잠금이 잡힌 lease를 고아로 회수하지 않는다. 결과 worktree·브랜치는 자동 병합·삭제하지 않는다. 검토 후 사용자가 병합 및 정리 정책을 선택한다.
@@ -57,6 +58,7 @@ Claude 플러그인은 `access.json`의 소유자 allowlist와 채널 목록에 
 | `bin/` | 설정·진단·스폰·종료·감시·진행 표시 |
 | `plugin/discord-orca/` | 로컬 marketplace의 Discord 플러그인 |
 | `jarvis/`, `codex-worker/` | 검수 데몬, 선택형 비전 브리지 |
+| `grok-worker/`, `bridge-kit/` | 선택형 그록 작업자 브리지, 비전과 공유하는 Discord 입출력·진행 표시 |
 | `roles/`, `sessions/` | 역할 지침, 상시 Claude 세션 cwd |
 | `state/threads/`, `state/pool.json` | 작업 등록부, 봇 대여 상태 |
 | `state/leads/`, `state/jarvis/`, `state/vision.codex/` | 역할별 프로세스·세션 상태 |
