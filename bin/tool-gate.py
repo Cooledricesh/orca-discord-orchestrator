@@ -8,7 +8,7 @@
 - 키 없음·타임아웃·네트워크·응답 형식 오류는 fail-open(allow) 하고 기록에 error 를 남긴다.
 - 모드: routes.json toolGate.mode — shadow(기본: 분리 자식이 판정·기록만, 훅은 즉시 반환) /
   enforce(동기 판정, deny 는 차단, ask 는 차단 + 스레드에 확인을 물으라는 사유) / off.
-기록: $STATE_DIR_ROOT/tool-gate/<threadId>.jsonl. 키: $BOTS_DIR/openrouter.env (OPENROUTER_API_KEY=).
+기록: $STATE_DIR_ROOT/tool-gate/<threadId>.jsonl. 키: config.openrouter_key_file (routes.json openrouterKeyFile > $BOTS_DIR/openrouter.env, OPENROUTER_API_KEY=).
 """
 import json, math, os, re, shlex, sys, threading, time, urllib.request
 from datetime import datetime
@@ -184,9 +184,10 @@ def evaluate(cmd: str, cwd: str, cfg: dict, key_file: str, orch_root: str = "", 
 
 
 def gate_config() -> dict:
-    from config import TOOL_GATE_DEFAULTS, load_routes, tool_gate
+    from config import TOOL_GATE_DEFAULTS, load_routes, openrouter_key_file, tool_gate
     try:
-        return tool_gate(load_routes())
+        data = load_routes()
+        return {**tool_gate(data), "keyFile": openrouter_key_file(data)}
     except Exception:
         return dict(TOOL_GATE_DEFAULTS)  # 설정 없음·형식 오류여도 기본(shadow)으로 기록은 남긴다
 
@@ -228,7 +229,7 @@ def enforce_output(rec: dict) -> dict | None:
 def run_gate(ev: dict, thread: str, cfg: dict, env: dict) -> dict:
     cmd = (ev.get("tool_input") or {}).get("command") or ""
     bots = env.get("BOTS_DIR") or os.path.expanduser("~/.claude/channels/bots")
-    rec = evaluate(cmd, ev.get("cwd") or "", cfg, os.path.join(bots, "openrouter.env"), env.get("ORCH_ROOT", ""))
+    rec = evaluate(cmd, ev.get("cwd") or "", cfg, cfg.get("keyFile") or os.path.join(bots, "openrouter.env"), env.get("ORCH_ROOT", ""))
     rec = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"), "command": cmd[:300],
            "mode": cfg["mode"], **rec}
     state_root = env.get("STATE_DIR_ROOT") or os.path.join(env.get("ORCH_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "state")

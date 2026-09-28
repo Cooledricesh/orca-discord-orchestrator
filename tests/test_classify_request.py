@@ -69,16 +69,21 @@ class ClassifyRequestTests(unittest.TestCase):
             r = cr.decide(self.cfg, classify=self.classify(opener))
             self.assertEqual((r["model"], r["effort"], r["source"], r["reason"]), ("", "", "default", code))
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
-            r = cr.decide(self.cfg, classify=lambda: cr.load_key(d))
+            r = cr.decide(self.cfg, classify=lambda: cr.load_key([str(Path(d) / "openrouter.env")]))
             self.assertEqual((r["source"], r["reason"]), ("default", "missing_key"))
 
     def test_request_text_drops_source_line_and_reads_key_file(self):
         self.assertEqual(cr.request_text("[출처 chat_id=1 message_id=2]\n고쳐줘"), "고쳐줘")
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
             (Path(d) / "openrouter.env").write_text("# c\nOPENROUTER_API_KEY='abc'\n")
-            self.assertEqual(cr.load_key(d), "abc")
-            (Path(d) / "shared.env").write_text("OTHER=1\nOPENROUTER_API_KEY=xyz\n")
-            self.assertEqual(cr.load_key(d, str(Path(d) / "shared.env")), "xyz")
+            d = str(Path(d).resolve())
+            own, shared = str(Path(d) / "openrouter.env"), str(Path(d) / "shared.env")
+            self.assertEqual(cr.load_key([shared, own]), "abc")
+            Path(shared).write_text("OTHER=1\nOPENROUTER_API_KEY=xyz\n")
+            self.assertEqual(cr.load_key([shared, own]), "xyz")
+            with patch.dict(os.environ, {"BOTS_DIR": d}):
+                self.assertEqual(cr.config.openrouter_key_files({"openrouterKeyFile": shared}), [shared, own])
+                self.assertEqual(cr.config.openrouter_key_file({"openrouterKeyFile": str(Path(d) / "none.env")}), own)
 
 
 if __name__ == "__main__":

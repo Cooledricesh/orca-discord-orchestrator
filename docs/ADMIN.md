@@ -114,7 +114,11 @@ Claude 봇은 Claude 모델만, 그록 봇은 `grok models` 목록의 모델만,
 
 ### 접수 난이도 라우팅 (Jev)
 
-`spawn-worker.sh`는 `--model`/`--effort`가 없고 claude 엔진의 새 작업이면 `bin/classify-request.py`로 요청 본문과 프로젝트 이름만 Jev(`typesafe/jev-1.13-20260917`, OpenRouter)에 보내 `simple|standard|hard`를 받는다. 매핑은 `routes.json`의 `jevRouting`(없으면 내장 기본값: simple→sonnet/medium, standard→`models.작업자`, hard→fable/high, `threshold` 0.85, `timeoutSec` 3, `enabled`)이다. 우선순위는 사용자 명시(해피의 `--model`/`--effort`) > 봇 항목 model/effort > Jev > 엔진 기본값이며 Grok 엔진·재개는 분류하지 않는다. 키(`OPENROUTER_API_KEY` 환경변수 > `jevRouting.keyFile`로 지정한 env 파일 > `$BOTS_DIR/openrouter.env`, 값은 복사·출력하지 않는다) 없음·API 실패·타임아웃·확신도 미달은 기본값으로 스폰한다. 등록부에 `routeLevel`·`routeConfidence`·`routeSource`(user|jev|default)를 남기고 대기열 재시도는 이 판정을 그대로 쓴다. 배정 표시는 `(opus/medium · 자동|지정|기본)`. 확인은 `spawn-worker.sh <채널> <스레드> --request-file <f> --dry-run`의 `model=… source=…` 줄과 stderr `난이도 분류:` 줄(`reason=`)로 한다.
+`spawn-worker.sh`는 `--model`/`--effort`가 없고 claude 엔진의 새 작업이면 `bin/classify-request.py`로 요청 본문과 프로젝트 이름만 Jev(`typesafe/jev-1.13-20260917`, OpenRouter)에 보내 `simple|standard|hard`를 받는다. 매핑은 `routes.json`의 `jevRouting`(없으면 내장 기본값: simple→sonnet/medium, standard→`models.작업자`, hard→fable/high, `threshold` 0.85, `timeoutSec` 3, `enabled`)이다. 우선순위는 사용자 명시(해피의 `--model`/`--effort`) > 봇 항목 model/effort > Jev > 엔진 기본값이며 Grok 엔진·재개는 분류하지 않는다. 키(`OPENROUTER_API_KEY` 환경변수 > 공통 OpenRouter 키 파일, 아래) 없음·API 실패·타임아웃·확신도 미달은 기본값으로 스폰한다. 등록부에 `routeLevel`·`routeConfidence`·`routeSource`(user|jev|default)를 남기고 대기열 재시도는 이 판정을 그대로 쓴다. 배정 표시는 `(opus/medium · 자동|지정|기본)`. 확인은 `spawn-worker.sh <채널> <스레드> --request-file <f> --dry-run`의 `model=… source=…` 줄과 stderr `난이도 분류:` 줄(`reason=`)로 한다.
+
+### OpenRouter 키 (공통)
+
+OpenRouter를 쓰는 기능(Jev 라우팅·툴 게이트, 이후 추가분도)은 `config.openrouter_key_file(s)`로 키 파일을 찾는다. 순서는 `routes.json` 최상위 `openrouterKeyFile`(예: `~/.hermes/.env`처럼 다른 에이전트가 쓰는 env 파일 경로) → `$BOTS_DIR/openrouter.env`. 키 값을 복사하거나 출력하지 않고 경로만 둔다. 원본 파일의 키가 바뀌면 여기도 함께 바뀌고 사용량은 같은 계정에 합산된다.
 
 ### 마크 서브에이전트 모델 티어
 
@@ -161,7 +165,7 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 `templates/progress-settings.json`의 PreToolUse(matcher `Bash`)로 `bin/tool-gate.py`가 마크의 Bash 호출마다 돈다
 (`ORCA_THREAD_ID` 없는 상시 세션·그록·자비스는 대상 아님). 읽기 전용 셸·git 조회·`post-result.sh`/`finish-worker.sh`는
 정규식·토큰 규칙으로 바로 allow, 나머지는 OpenRouter Decisions API의 Jev(`toolGate.model`)에 State/Choice(allow·ask·deny)로 묻는다.
-최종 판정은 코드가 한다: 확신도가 `threshold`(기본 0.85) 미만이면 allow·deny 모두 ask. 키는 `$BOTS_DIR/openrouter.env`의
+최종 판정은 코드가 한다: 확신도가 `threshold`(기본 0.85) 미만이면 allow·deny 모두 ask. 키는 공통 OpenRouter 키 파일의
 `OPENROUTER_API_KEY=` 한 줄이며, 키 없음·3.5초 타임아웃·네트워크·응답 형식 오류는 allow(fail-open)하고 기록에 `error`를 남긴다.
 기록은 `state/tool-gate/<스레드>.jsonl`(ts·command 앞 300자·decision·verdict·confidence·ms·mode·source·error).
 `routes.json` `toolGate.mode`: `shadow`(기본, 판정·기록만 하고 훅은 즉시 반환 — 분리 자식이 처리), `enforce`, `off`.

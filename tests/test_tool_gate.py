@@ -125,6 +125,16 @@ class RunGateTests(unittest.TestCase):
             self.assertEqual((lines[1]["source"], lines[1]["error"]), ("fail-open", "missing_key"))
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
+    def test_shared_key_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            shared = Path(tmp) / "shared.env"; shared.write_text("OPENROUTER_API_KEY=k\n")
+            env = {"STATE_DIR_ROOT": os.path.join(tmp, "state"), "BOTS_DIR": os.path.join(tmp, "bots")}
+            ev = Mock(return_value={"decision": "allow"})
+            with unittest.mock.patch.object(gate, "evaluate", ev):
+                gate.run_gate({"tool_input": {"command": RISKY}, "cwd": tmp}, "t1", dict(CFG, keyFile=str(shared)), env)
+            self.assertEqual(ev.call_args.args[3], str(shared))
+            self.assertEqual(gate.load_key(ev.call_args.args[3]), "k")
+
 
 class OutputConfigTests(unittest.TestCase):
     def test_enforce_output(self):

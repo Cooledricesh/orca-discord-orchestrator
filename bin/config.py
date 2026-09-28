@@ -40,7 +40,7 @@ def load_routes():
             raise ValueError("routes: expected route objects")
         if not isinstance(data.get("toolGate", {}), dict):
             raise ValueError("toolGate: expected object")
-        for key in ("stateRoot", "codexAuthFile"):
+        for key in ("stateRoot", "codexAuthFile", "openrouterKeyFile"):
             if key in data and not isinstance(data[key], str):
                 raise ValueError(f"{key}: expected path string")
     except FileNotFoundError:
@@ -126,6 +126,26 @@ def runtime_paths(data=None):
         "BOTS_DIR": absolute(os.environ.get("BOTS_DIR", Path(channel_root) / "bots")),
         "ORCH_CODEX_AUTH_FILE": absolute(os.environ.get("ORCH_CODEX_AUTH_FILE") or data.get("codexAuthFile") or Path(source_home) / "auth.json"),
     }
+
+
+def openrouter_key_files(data):
+    """OpenRouter 키 파일 후보 (앞이 우선): routes.json openrouterKeyFile(다른 에이전트의 .env 등) > $BOTS_DIR/openrouter.env."""
+    extra = data.get("openrouterKeyFile") or ""
+    return ([absolute(extra)] if extra else []) + [str(Path(runtime_paths(data)["BOTS_DIR"]) / "openrouter.env")]
+
+
+def openrouter_key_file(data):
+    """OPENROUTER_API_KEY 가 들어 있는 첫 후보 파일 (없으면 마지막 후보). 값은 읽기만 하고 출력하지 않는다."""
+    files = openrouter_key_files(data)
+    for path in files:
+        try:
+            for line in Path(path).read_text(encoding="utf-8").splitlines():
+                name, sep, value = line.strip().partition("=")
+                if sep and name.strip() == "OPENROUTER_API_KEY" and value.strip().strip("\"'"):
+                    return path
+        except (OSError, UnicodeError):
+            continue
+    return files[-1]
 
 
 def query(data, expression):
