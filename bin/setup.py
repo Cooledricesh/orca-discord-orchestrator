@@ -15,7 +15,7 @@ import sys
 from urllib.parse import urlencode
 
 sys.dont_write_bytecode = True
-from config import ENGINES, ROLES, absolute, enabled_bots, load_routes, role_enabled, root_path, routes_path, runtime_paths, worker_entries
+from config import ENGINES, ROLES, TOOL_GATE_MODES, absolute, enabled_bots, load_routes, role_enabled, root_path, routes_path, runtime_paths, worker_entries
 
 
 def run(args, timeout=15):
@@ -103,6 +103,16 @@ def config_errors(data):
         seen.add(entry["name"])
     if role_enabled(data, "비전") and sum(isinstance(r, dict) and r.get("kind") == "lounge" for r in routes.values()) != 1:
         errors.append("비전 활성 시 lounge 라우트는 정확히 하나 필요")
+    gate = data.get("toolGate", {})
+    if not isinstance(gate, dict):
+        errors.append("toolGate: JSON 객체 필요")
+    else:
+        if "mode" in gate and gate["mode"] not in TOOL_GATE_MODES:
+            errors.append(f"toolGate.mode: {' | '.join(TOOL_GATE_MODES)} 만 허용")
+        if "threshold" in gate and (type(gate["threshold"]) not in (int, float) or not 0 < gate["threshold"] <= 1):
+            errors.append("toolGate.threshold: 0 초과 1 이하 숫자 필요")
+        if "notify" in gate and not isinstance(gate["notify"], bool):
+            errors.append("toolGate.notify: true/false 필요")
     review = data.get("review", {})
     for key in ("maxConcurrent", "timeoutMin", "historyMaxMessages", "historyMaxChars", "channelThreadTtlHours", "gcDays"):
         if key in review and (type(review[key]) not in (int, float) or review[key] <= 0):
