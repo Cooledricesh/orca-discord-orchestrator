@@ -6,7 +6,7 @@
   빈 model/effort 는 "엔진 기본값 사용". 항상 exit 0 (fail-open): 키 없음·API 실패·타임아웃은 source=default.
 
 우선순위: 사용자 명시(--model/--effort) > Jev(확신도 ≥ threshold) > 기본값.
-설정: routes.json "jevRouting" (없으면 DEFAULTS). API 키: OPENROUTER_API_KEY 환경변수 또는 $BOTS_DIR/openrouter.env.
+설정: routes.json "jevRouting" (없으면 DEFAULTS). API 키: OPENROUTER_API_KEY 환경변수 > jevRouting.keyFile(env 형식 파일 경로) > $BOTS_DIR/openrouter.env.
 요청 본문과 프로젝트 이름만 보낸다. 키·응답 원문은 출력하지 않는다.
 """
 import argparse
@@ -29,6 +29,7 @@ DEFAULTS = {
     "model": "typesafe/jev-1.13-20260917",
     "threshold": 0.85,
     "timeoutSec": 3,
+    "keyFile": "",
     # 빈 항목 = 엔진 기본값 (models.작업자 / 작업자Effort)
     "levels": {"simple": {"model": "sonnet", "effort": "medium"}, "standard": {}, "hard": {"model": "fable", "effort": "high"}},
 }
@@ -48,17 +49,18 @@ def settings(data):
     return cfg
 
 
-def load_key(bots_dir):
+def load_key(bots_dir, key_file=""):
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if key:
         return key
-    try:
-        for line in (Path(bots_dir) / "openrouter.env").read_text(encoding="utf-8").splitlines():
-            name, sep, value = line.strip().partition("=")
-            if sep and name.strip() == "OPENROUTER_API_KEY" and value.strip().strip("\"'"):
-                return value.strip().strip("\"'")
-    except (OSError, UnicodeError):
-        pass
+    for path in ([Path(key_file).expanduser()] if key_file else []) + [Path(bots_dir) / "openrouter.env"]:
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                name, sep, value = line.strip().partition("=")
+                if sep and name.strip() == "OPENROUTER_API_KEY" and value.strip().strip("\"'"):
+                    return value.strip().strip("\"'")
+        except (OSError, UnicodeError):
+            continue
     raise JevError("missing_key")
 
 
@@ -163,7 +165,7 @@ def main(argv=None):
     cfg = settings(data)
 
     def classify():
-        key = load_key(config.runtime_paths(data)["BOTS_DIR"])
+        key = load_key(config.runtime_paths(data)["BOTS_DIR"], str(cfg["keyFile"] or ""))
         try:
             text = request_text(Path(a.request_file).read_text(encoding="utf-8"))
         except (OSError, UnicodeError) as exc:

@@ -44,11 +44,12 @@
     }
   },
   "jevRouting": {
-    "_comment": "접수 난이도 라우팅. 키: $BOTS_DIR/openrouter.env (OPENROUTER_API_KEY). 빈 levels 항목 = models.작업자 기본값",
+    "_comment": "접수 난이도 라우팅. 키: keyFile(다른 에이전트의 .env 경로 등) 또는 $BOTS_DIR/openrouter.env 의 OPENROUTER_API_KEY. 빈 levels 항목 = models.작업자 기본값",
     "enabled": true,
     "model": "typesafe/jev-1.13-20260917",
     "threshold": 0.85,
     "timeoutSec": 3,
+    "keyFile": "",
     "levels": {
       "simple": {"model": "sonnet", "effort": "medium"},
       "standard": {},

@@ -77,6 +77,8 @@ class ClassifyRequestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
             (Path(d) / "openrouter.env").write_text("# c\nOPENROUTER_API_KEY='abc'\n")
             self.assertEqual(cr.load_key(d), "abc")
+            (Path(d) / "shared.env").write_text("OTHER=1\nOPENROUTER_API_KEY=xyz\n")
+            self.assertEqual(cr.load_key(d, str(Path(d) / "shared.env")), "xyz")
 
 
 if __name__ == "__main__":

@@ -114,7 +114,7 @@ Claude 봇은 Claude 모델만, 그록 봇은 `grok models` 목록의 모델만,
 
 ### 접수 난이도 라우팅 (Jev)
 
-`spawn-worker.sh`는 `--model`/`--effort`가 없고 claude 엔진의 새 작업이면 `bin/classify-request.py`로 요청 본문과 프로젝트 이름만 Jev(`typesafe/jev-1.13-20260917`, OpenRouter)에 보내 `simple|standard|hard`를 받는다. 매핑은 `routes.json`의 `jevRouting`(없으면 내장 기본값: simple→sonnet/medium, standard→`models.작업자`, hard→fable/high, `threshold` 0.85, `timeoutSec` 3, `enabled`)이다. 우선순위는 사용자 명시(해피의 `--model`/`--effort`) > 봇 항목 model/effort > Jev > 엔진 기본값이며 Grok 엔진·재개는 분류하지 않는다. 키(`$BOTS_DIR/openrouter.env`의 `OPENROUTER_API_KEY` 또는 같은 이름의 환경변수) 없음·API 실패·타임아웃·확신도 미달은 기본값으로 스폰한다. 등록부에 `routeLevel`·`routeConfidence`·`routeSource`(user|jev|default)를 남기고 대기열 재시도는 이 판정을 그대로 쓴다. 배정 표시는 `(opus/medium · 자동|지정|기본)`. 확인은 `spawn-worker.sh <채널> <스레드> --request-file <f> --dry-run`의 `model=… source=…` 줄과 stderr `난이도 분류:` 줄(`reason=`)로 한다.
+`spawn-worker.sh`는 `--model`/`--effort`가 없고 claude 엔진의 새 작업이면 `bin/classify-request.py`로 요청 본문과 프로젝트 이름만 Jev(`typesafe/jev-1.13-20260917`, OpenRouter)에 보내 `simple|standard|hard`를 받는다. 매핑은 `routes.json`의 `jevRouting`(없으면 내장 기본값: simple→sonnet/medium, standard→`models.작업자`, hard→fable/high, `threshold` 0.85, `timeoutSec` 3, `enabled`)이다. 우선순위는 사용자 명시(해피의 `--model`/`--effort`) > 봇 항목 model/effort > Jev > 엔진 기본값이며 Grok 엔진·재개는 분류하지 않는다. 키(`OPENROUTER_API_KEY` 환경변수 > `jevRouting.keyFile`로 지정한 env 파일 > `$BOTS_DIR/openrouter.env`, 값은 복사·출력하지 않는다) 없음·API 실패·타임아웃·확신도 미달은 기본값으로 스폰한다. 등록부에 `routeLevel`·`routeConfidence`·`routeSource`(user|jev|default)를 남기고 대기열 재시도는 이 판정을 그대로 쓴다. 배정 표시는 `(opus/medium · 자동|지정|기본)`. 확인은 `spawn-worker.sh <채널> <스레드> --request-file <f> --dry-run`의 `model=… source=…` 줄과 stderr `난이도 분류:` 줄(`reason=`)로 한다.
 
 ### 마크 서브에이전트 모델 티어
 
