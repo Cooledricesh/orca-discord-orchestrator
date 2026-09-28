@@ -112,6 +112,12 @@ Claude 봇은 Claude 모델만, 그록 봇은 `grok models` 목록의 모델만,
 재시작 실패 시 설정 저장과 적용 실패를 구분해 알리며 `!모델`에서도 결과를 볼 수 있다. 주기 감시나 모델 호출은 추가하지 않는다.
 플러그인 코드 배포 후 실행 중인 프라이데이의 `/mcp`에서 `plugin:discord-orca:discord`를 Reconnect해야 한다.
 
+### 마크 서브에이전트 모델 티어
+
+마크가 Agent 툴로 위임할 때 작업 종류별로 모델을 고른다. 탐색·grep·파일 훑기·웹검색·문서 읽기는 sonnet, 정형 반복(고정 패턴 변환·대량 단순 편집·포맷 맞추기)은 haiku, 일반 구현·조사 종합·리뷰는 opus(마크 기본), 복잡한 설계·난이도 높은 디버깅·사용자가 "fable로" 라고 한 작업은 fable.
+규칙은 `roles/작업자.md`(`--append-system-prompt-file` 주입)에만 두고 전역 `~/.claude`에는 넣지 않는다. 마크가 Agent 호출의 `model` 인자로 모델을 고른다. `CLAUDE_CODE_SUBAGENT_MODEL`은 기본 모델 하나만 정하고 `_FORCE`는 호출별 선택을 무시하므로 쓰지 않는다. `model`을 빠뜨리면 부모 모델(opus)을 이어받는다.
+확인은 세션 기록 `~/.claude/projects/<경로>/<세션>/subagents/agent-*.jsonl`의 `"model"` 필드로 한다.
+
 ### 해피·자비스 DM
 
 해피와 자비스는 `routes.json`의 `ownerUserId`에 지정된 본인의 1:1 DM만 받는다.

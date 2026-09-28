@@ -607,5 +607,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("worker-discord.sh\" react <requestMessageId>", grok)
 
 
+    def test_claude_role_sets_subagent_model_tiers(self):
+        role = (SOURCE / "roles" / "작업자.md").read_text()
+        rule = next(line for line in role.splitlines() if line.startswith("- 위임 모델:"))
+        for model in ("sonnet", "haiku", "opus", "fable"):
+            self.assertIn(f'`"{model}"`', rule)
+        self.assertNotIn("SUBAGENT_MODEL", (SOURCE / "templates" / "progress-settings.json").read_text())
+
 if __name__ == "__main__":
     unittest.main()
