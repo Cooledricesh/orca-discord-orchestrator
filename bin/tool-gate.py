@@ -8,9 +8,10 @@
 - 키 없음·타임아웃·네트워크·응답 형식 오류는 fail-open(allow) 하고 기록에 error 를 남긴다.
 - 모드: routes.json toolGate.mode — shadow(기본: 분리 자식이 판정·기록만, 훅은 즉시 반환) /
   enforce(동기 판정, deny 는 차단, ask 는 차단 + 스레드에 확인을 물으라는 사유) / off.
-기록: $STATE_DIR_ROOT/tool-gate/<threadId>.jsonl. 키: config.openrouter_key_file (routes.json openrouterKeyFile > $BOTS_DIR/openrouter.env, OPENROUTER_API_KEY=).
+기록: $STATE_DIR_ROOT/tool-gate/<threadId>.jsonl. 누적 집계: tool-gate/summary.json — 섀도에서 Jev 판정 수·스레드 수가
+toolGate.reviewAt(기본 50건·10개)에 처음 닿으면 운영 로그 채널에 소유자 멘션으로 검토 알림을 한 번 올린다. 키: config.openrouter_key_file (routes.json openrouterKeyFile > $BOTS_DIR/openrouter.env, OPENROUTER_API_KEY=).
 """
-import json, math, os, re, shlex, sys, threading, time, urllib.request
+import fcntl, json, math, os, re, shlex, sys, threading, time, urllib.request
 from datetime import datetime
 
 sys.dont_write_bytecode = True
@@ -200,20 +201,81 @@ def write_log(state_root: str, thread: str, rec: dict) -> None:
         out.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-def notify(thread: str, rec: dict) -> None:
+def tally(state_root: str, thread: str, rec: dict, review_at: dict) -> dict | None:
+    """summary.json 누적. 검토 기준에 처음 닿은 호출에만 집계를 돌려준다 (그 뒤로는 None)."""
+    d = os.path.join(state_root, "tool-gate")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "summary.json")
+    with open(os.path.join(d, "summary.lock"), "w") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        try:
+            with open(path) as stream:
+                s = json.load(stream)
+        except (OSError, ValueError):
+            s = {"since": rec["ts"], "total": 0, "rule": 0, "jev": 0, "decisions": {}, "lowConfidence": 0,
+                 "errors": {}, "threads": [], "notified": None}
+        s["total"] += 1
+        if rec["source"] == "jev":
+            s["jev"] += 1
+            s["decisions"][rec["decision"]] = s["decisions"].get(rec["decision"], 0) + 1
+            s["lowConfidence"] += rec["verdict"] != rec["decision"]
+            if thread not in s["threads"]:
+                s["threads"].append(thread)
+        elif rec["error"]:
+            s["errors"][rec["error"]] = s["errors"].get(rec["error"], 0) + 1
+        else:
+            s["rule"] += 1
+        due = not s["notified"] and s["jev"] >= review_at["jev"] and len(s["threads"]) >= review_at["threads"]
+        if due:
+            s["notified"] = rec["ts"]
+        tmp = path + ".tmp"
+        with open(tmp, "w") as out:
+            json.dump(s, out, ensure_ascii=False)
+        os.replace(tmp, path)
+    return s if due else None
+
+
+def discord_api():
+    """(token, api) — 마크 봇 토큰과 progress-hook 의 REST 헬퍼. 없으면 (None, None)."""
     sd = os.environ.get("DISCORD_STATE_DIR")
     if not sd:
-        return
+        return None, None
     import importlib.util
     spec = importlib.util.spec_from_file_location("progress_hook", os.path.join(os.path.dirname(os.path.realpath(__file__)), "progress-hook.py"))
-    progress_api = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(progress_api)
-    token = progress_api.read_token(os.path.join(sd, ".env"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    token = mod.read_token(os.path.join(sd, ".env"))
+    return (token, mod.api) if token else (None, None)
+
+
+def review_message(s: dict, owner: str) -> str:
+    dec = s["decisions"]
+    errors = ", ".join(f"{k} {v}" for k, v in s["errors"].items()) or "없음"
+    return (f"<@{owner}> 🛡 툴 게이트 섀도 기록이 검토 기준에 닿았습니다 ({s['since'][:10]}~)\n"
+            f"- 마크 작업 {len(s['threads'])}개 · Bash {s['total']}건 (규칙 allow {s['rule']} · Jev {s['jev']})\n"
+            f"- Jev 최종: allow {dec.get('allow', 0)} · ask {dec.get('ask', 0)} · deny {dec.get('deny', 0)} "
+            f"(확신도 미달로 ask 로 내린 것 {s['lowConfidence']})\n"
+            f"- fail-open: {errors}\n"
+            f"오판 검토 후 enforce 전환 여부를 정하세요. 오케스트레이터 스레드에 \"게이트 기록 정리\" 요청.")
+
+
+def notify_review(s: dict) -> None:
+    from config import load_routes
+    routes = load_routes()
+    channel, owner = routes.get("opsLogChannelId"), routes.get("ownerUserId")
+    token, api = discord_api()
+    if token and channel and owner:
+        api(token, "POST", f"/channels/{channel}/messages",
+            {"content": review_message(s, owner), "allowed_mentions": {"users": [owner]}})
+
+
+def notify(thread: str, rec: dict) -> None:
+    token, api = discord_api()
     if not token:
         return
     conf = "" if rec["confidence"] is None else f" {rec['confidence']:.2f}"
     cmd = rec["command"][:80].replace("`", "'")
-    progress_api.api(token, "POST", f"/channels/{thread}/messages",
+    api(token, "POST", f"/channels/{thread}/messages",
                      {"content": f"🛡 게이트(섀도) {rec['decision']}{conf} · `{cmd}`", "allowed_mentions": {"parse": []}})
 
 
@@ -226,15 +288,18 @@ def enforce_output(rec: dict) -> dict | None:
                                    "permissionDecisionReason": reason}}
 
 
+def state_dir(env) -> str:
+    return env.get("STATE_DIR_ROOT") or os.path.join(env.get("ORCH_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "state")
+
+
 def run_gate(ev: dict, thread: str, cfg: dict, env: dict) -> dict:
     cmd = (ev.get("tool_input") or {}).get("command") or ""
     bots = env.get("BOTS_DIR") or os.path.expanduser("~/.claude/channels/bots")
     rec = evaluate(cmd, ev.get("cwd") or "", cfg, cfg.get("keyFile") or os.path.join(bots, "openrouter.env"), env.get("ORCH_ROOT", ""))
     rec = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"), "command": cmd[:300],
            "mode": cfg["mode"], **rec}
-    state_root = env.get("STATE_DIR_ROOT") or os.path.join(env.get("ORCH_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "state")
     try:
-        write_log(state_root, thread, rec)
+        write_log(state_dir(env), thread, rec)
     except OSError:
         pass
     return rec
@@ -269,6 +334,9 @@ def main() -> None:
         rec = run_gate(ev, thread, cfg, dict(os.environ))
         if cfg["notify"] and rec["decision"] != "allow":
             notify(thread, rec)
+        summary = tally(state_dir(os.environ), thread, rec, cfg["reviewAt"])
+        if summary:
+            notify_review(summary)
     except Exception:
         pass
     os._exit(0)

@@ -151,11 +151,35 @@ class OutputConfigTests(unittest.TestCase):
         bad = config.tool_gate({"toolGate": {"mode": "loud", "threshold": 2}})
         self.assertEqual((bad["mode"], bad["threshold"]), ("shadow", 0.85))
         self.assertEqual(config.tool_gate({"toolGate": {"mode": "enforce"}})["mode"], "enforce")
+        self.assertEqual(config.tool_gate({})["reviewAt"], {"jev": 50, "threads": 10})
+        review = config.tool_gate({"toolGate": {"reviewAt": {"jev": 5, "threads": 0}}})["reviewAt"]
+        self.assertEqual(review, {"jev": 5, "threads": 10})
 
     def test_template(self):
         data = json.loads((ROOT / "templates/progress-settings.json").read_text())
         hooks = [h for e in data["hooks"]["PreToolUse"] if e.get("matcher") == "Bash" for h in e["hooks"]]
         self.assertTrue(any("tool-gate.py" in h["command"] and h["timeout"] == 5 for h in hooks))
+
+
+class TallyTests(unittest.TestCase):
+    def rec(self, source="jev", verdict="allow", decision="allow", error=None):
+        return {"ts": "2026-09-28T18:00:00+09:00", "source": source, "verdict": verdict, "decision": decision, "error": error}
+
+    def test_review_notice_once_when_both_thresholds_met(self):
+        review = {"jev": 3, "threads": 2}
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(gate.tally(d, "t1", self.rec(source="rule", verdict=None), review))
+            self.assertIsNone(gate.tally(d, "t1", self.rec(source="fail-open", verdict=None, error="timeout"), review))
+            self.assertIsNone(gate.tally(d, "t1", self.rec(), review))
+            self.assertIsNone(gate.tally(d, "t1", self.rec(decision="ask"), review))
+            self.assertIsNone(gate.tally(d, "t1", self.rec(verdict="deny", decision="deny"), review))  # 3건이지만 스레드 1개
+            s = gate.tally(d, "t2", self.rec(verdict="ask", decision="ask"), review)
+            self.assertEqual((s["jev"], s["rule"], s["lowConfidence"], s["errors"], s["decisions"]),
+                             (4, 1, 1, {"timeout": 1}, {"allow": 1, "ask": 2, "deny": 1}))
+            self.assertIsNone(gate.tally(d, "t3", self.rec(), review))  # 한 번만
+            msg = gate.review_message(s, "42")
+            self.assertTrue(msg.startswith("<@42>"))
+            self.assertIn("ask 2", msg)
 
 
 if __name__ == "__main__":

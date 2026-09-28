@@ -11,7 +11,8 @@ SOURCE_ROOT = Path(__file__).resolve().parent.parent
 ROLES = ("상담역", "접수원", "작업자", "리뷰어", "비전")
 ENGINES = ("claude", "grok")
 TOOL_GATE_MODES = ("shadow", "enforce", "off")
-TOOL_GATE_DEFAULTS = {"mode": "shadow", "model": "typesafe/jev-1.13-20260917", "threshold": 0.85, "notify": False}
+TOOL_GATE_DEFAULTS = {"mode": "shadow", "model": "typesafe/jev-1.13-20260917", "threshold": 0.85, "notify": False,
+                      "reviewAt": {"jev": 50, "threads": 10}}
 
 
 def absolute(value):
@@ -84,6 +85,9 @@ def tool_gate(data):
         cfg["threshold"] = float(raw["threshold"])
     if isinstance(raw.get("notify"), bool):
         cfg["notify"] = raw["notify"]
+    review = raw.get("reviewAt") if isinstance(raw.get("reviewAt"), dict) else {}
+    cfg["reviewAt"] = {k: review[k] if type(review.get(k)) is int and review[k] > 0 else v
+                       for k, v in TOOL_GATE_DEFAULTS["reviewAt"].items()}
     return cfg
 
 

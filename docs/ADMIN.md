@@ -169,6 +169,8 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 `OPENROUTER_API_KEY=` 한 줄이며, 키 없음·3.5초 타임아웃·네트워크·응답 형식 오류는 allow(fail-open)하고 기록에 `error`를 남긴다.
 기록은 `state/tool-gate/<스레드>.jsonl`(ts·command 앞 300자·decision·verdict·confidence·ms·mode·source·error).
 `routes.json` `toolGate.mode`: `shadow`(기본, 판정·기록만 하고 훅은 즉시 반환 — 분리 자식이 처리), `enforce`, `off`.
+섀도 누적 집계는 `state/tool-gate/summary.json`이며, Jev 판정 수·마크 작업 수가 `toolGate.reviewAt`(기본 50건·10개)에
+처음 닿으면 운영 로그 채널에 소유자 멘션으로 검토 알림(판정 분포·확신도 미달·fail-open 수)을 한 번 올린다. 다시 받으려면 `summary.json`을 지운다.
 `toolGate.notify: true`면 섀도에서 ask/deny 판정을 스레드에 한 줄 알린다(기본 off).
 **enforce 전환**: 섀도 기록에서 오판(`source=jev`인데 부당한 ask/deny)을 먼저 확인한 뒤 `toolGate.mode`를 `"enforce"`로 바꾼다.
 훅이 매번 설정을 읽으므로 재시작은 필요 없다. enforce는 동기 판정이며 deny는 차단, ask는 차단 + "스레드에 소유자 확인을 요청하고
