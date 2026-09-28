@@ -26,6 +26,8 @@ Claude 플러그인은 `access.json`의 소유자 allowlist와 채널 목록에 
 5. project 스코프 플러그인 설치 후 새 Orca 터미널에 경로·수신 범위·역할 프롬프트를 전달한다. 초기 플러그인 연결 확인에 실패하면 한 번 재시도하고 경고한다. 그록은 플러그인 대신 브리지를 띄우고 `state/threads/<id>.grok/runtime.json`이 ready가 될 때까지 기다린다. 준비되지 않으면 스레드에 알리고 봇을 반환한다. 브리지는 격리 HOME으로 grok을 실행해 Claude 플러그인·MCP를 불러오지 않는다 ([설계](docs/grok-worker.md)).
 6. 결과 보고 후에도 세션을 유지한다. 종료 지시 또는 sweep의 30분 유휴 판정으로 스레드 보관·터미널 종료·봇 반환과 대기열 재시도를 수행한다.
 
+모델/effort는 사용자 명시 > 봇 항목 > Jev 난이도 분류(`bin/classify-request.py`, `routes.json` `jevRouting` 매핑, 확신도 0.85 미만·키 없음·실패·3초 초과는 기본값) > 엔진 기본값 순으로 정한다. 판정은 등록부 `routeLevel`·`routeConfidence`·`routeSource`(user|jev|default)에 남고 대기열 재시도는 다시 분류하지 않는다.
+
 대기열은 `queuedAt` 우선으로 정렬한다. sweep은 스폰 잠금이 잡힌 lease를 고아로 회수하지 않는다. 결과 worktree·브랜치는 자동 병합·삭제하지 않는다. 검토 후 사용자가 병합 및 정리 정책을 선택한다.
 
 같은 스레드의 `--resume`은 저장된 Claude sessionId와 같은 격리 worktree를 사용한다. 기본 재요청은 새 worktree다. 과거 공유 폴더 세션의 resume은 거부한다. 다른 세션으로 인계할 때는 사용자가 요청한 인계 문서 경로만 전달한다.

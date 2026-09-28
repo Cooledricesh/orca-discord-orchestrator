@@ -2,7 +2,8 @@
 # 작업자 스폰 (마크=Claude, 그록=Grok 브리지).
 #   spawn-worker.sh <channelId> <threadId> [--title "<t>|@file"] [--request-file <file>] [--request-message-id <id>]
 #                   [--engine claude|grok] [--bot <이름>] [--model <id>] [--effort <low|medium|high|max>] [--new-worktree] [--resume] [--dry-run]
-# --engine: 기본 claude. --bot: 그 봇만 빌린다 (엔진은 그 봇의 엔진). 모델/effort: --model > 봇 항목 model > 엔진 기본값(작업자 / grok작업자).
+# --engine: 기본 claude. --bot: 그 봇만 빌린다 (엔진은 그 봇의 엔진). 모델/effort: --model > 봇 항목 model > Jev 난이도 매핑 > 엔진 기본값(작업자 / grok작업자).
+# 난이도 라우팅: --model/--effort 가 없고 claude 엔진·새 작업이면 bin/classify-request.py 로 Jev 분류 (실패하면 기본값). 판정은 등록부 routeLevel/routeConfidence/routeSource.
 # exit 0: 스폰됨 (stdout 마지막 줄 `bot=<bot> display=<표시이름> terminal=<handle> plugin=ok|missing`). missing 이면 마크가 스레드를 못 듣는다 (스레드·#운영-로그에 ⚠️ 게시됨)
 # exit 3: 그 엔진의 풀 꽉 참 (등록부에 status=queued + engine 기록, 같은 엔진 finish-worker 가 다음에 자동 스폰)
 # exit 1: 라우팅 불가 / 오류
@@ -14,10 +15,11 @@ channel="${1:-}"; thread="${2:-}"
 [[ "$channel" == <-> && "$thread" == <-> ]] || die "usage: spawn-worker.sh <channelId> <threadId> [--title t|@file] [--request-file f] [--request-message-id id] [--model m] [--effort e] [--new-worktree] [--resume] [--dry-run]"
 args=("$@"); shift 2
 title=""; request=""; request_id=""; new_wt=1; resume=0; dry=0; sel_model=""; sel_effort=""; engine=""; sel_bot=""; def_model=""; def_effort=""
+request_file=""; route_level=""; route_conf=""; route_source=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --title) title="${2:-}"; shift 2;;
-    --request-file) request="$(cat "${2:-}")"; shift 2;;
+    --request-file) request_file="${2:-}"; request="$(cat "$request_file")"; shift 2;;
     --request-message-id) request_id="${2:-}"; shift 2;;
     --model) sel_model="${2:-}"; shift 2;;
     --effort) sel_effort="${2:-}"; shift 2;;
@@ -26,6 +28,10 @@ while [[ $# -gt 0 ]]; do
     # 대기열 재시도 전용: 대기 시점의 엔진 기본값 (봇 항목 model/effort 보다 우선순위가 낮다)
     --default-model) def_model="${2:-}"; shift 2;;
     --default-effort) def_effort="${2:-}"; shift 2;;
+    # 대기열 재시도 전용: 대기 시점의 난이도 판정 (다시 분류하지 않는다)
+    --route-level) route_level="${2:-}"; shift 2;;
+    --route-confidence) route_conf="${2:-}"; shift 2;;
+    --route-source) route_source="${2:-}"; shift 2;;
     --new-worktree) new_wt=1; shift;;
     --resume) resume=1; shift;;
     --dry-run) dry=1; shift;;
@@ -68,6 +74,19 @@ owner="$(owner_id)"; guild="$(guild_id)"; plugin="$(channel_args)"
 mkey=작업자; [[ "$engine" == claude ]] || mkey="${engine}작업자"
 [[ -n "$def_model" ]] || def_model="$(route_get "[\"models\"][\"$mkey\"]" 2>/dev/null || true)"
 [[ -n "$def_effort" ]] || def_effort="$(route_get "[\"models\"][\"${mkey}Effort\"]" 2>/dev/null || true)"
+# 난이도 라우팅: 사용자 명시 > Jev > 기본값. 재개는 이전 판정, 대기열 재시도는 대기 시점 판정(--route-*)을 그대로 쓴다.
+if (( resume )); then
+  route_level="$(registry_get "$thread" routeLevel)"; route_conf="$(registry_get "$thread" routeConfidence)"; route_source="$(registry_get "$thread" routeSource)"
+elif [[ -z "$route_source" ]]; then
+  cls="$(python3 "$ORCH_ROOT/bin/classify-request.py" "${request_file:-/dev/null}" --project "$project" --engine "$engine" --model "$sel_model" --effort "$sel_effort" 2>/dev/null || true)"
+  typeset -A rt; for kv in ${(z)cls}; do rt[${kv%%=*}]="${kv#*=}"; done
+  route_level="${rt[level]:-}"; route_conf="${rt[confidence]:-}"; route_source="${rt[source]:-default}"
+  (( dry )) && log "난이도 분류: ${cls:-(출력 없음)}"
+  if [[ "$route_source" == jev ]]; then
+    [[ -z "${rt[model]:-}" ]] || def_model="${rt[model]}"
+    [[ -z "${rt[effort]:-}" ]] || def_effort="${rt[effort]}"
+  fi
+fi
 model="${sel_model:-$def_model}"; effort="${sel_effort:-$def_effort}"
 jarvis_app_id="$(reviewer_app_id)"
 lounge="$(lounge_channel)"
@@ -107,8 +126,8 @@ else
   rc=0; bot="$("$ORCH_ROOT/bin/pool.sh" lease "$thread" "$engine" "$sel_bot")" || rc=$?
   if (( rc == 3 )); then
     # model/effort 는 대기 시점 값. explicit* 가 false 면 재시도 때 봇 항목 model/effort 가 우선한다.
-    registry_write "$thread" "$(python3 -c 'import json,sys;a=sys.argv;r=a[7]=="1";print(json.dumps(dict(threadId=a[1],channelId=a[2],project=a[3],path=(a[8] if r else a[4]),worktreeMode=(a[9] if r else None),bot=(a[17] or None),status="queued",taskTitle=a[5],newWorktree=a[6]=="1",resume=r,sessionId=(a[10] if r else None),queuedAt=a[11],currentRequest=a[12],requestMessageId=a[13],model=a[14],effort=a[15],engine=a[16],explicitModel=a[18]!="",explicitEffort=a[19]!=""),ensure_ascii=False))' \
-      "$thread" "$channel" "$project" "$proj_path" "$title" "$new_wt" "$resume" "$prev_path" "$prev_mode" "$sid" "$(now)" "$request" "$request_id" "$model" "$effort" "$engine" "$sel_bot" "$sel_model" "$sel_effort")"
+    registry_write "$thread" "$(python3 -c 'import json,sys;a=sys.argv;r=a[7]=="1";print(json.dumps(dict(threadId=a[1],channelId=a[2],project=a[3],path=(a[8] if r else a[4]),worktreeMode=(a[9] if r else None),bot=(a[17] or None),status="queued",taskTitle=a[5],newWorktree=a[6]=="1",resume=r,sessionId=(a[10] if r else None),queuedAt=a[11],currentRequest=a[12],requestMessageId=a[13],model=a[14],effort=a[15],engine=a[16],explicitModel=a[18]!="",explicitEffort=a[19]!="",routeLevel=a[20],routeConfidence=a[21],routeSource=a[22]),ensure_ascii=False))' \
+      "$thread" "$channel" "$project" "$proj_path" "$title" "$new_wt" "$resume" "$prev_path" "$prev_mode" "$sid" "$(now)" "$request" "$request_id" "$model" "$effort" "$engine" "$sel_bot" "$sel_model" "$sel_effort" "$route_level" "$route_conf" "$route_source")"
     log "풀 꽉 참 ($engine) → queued"; exit 3
   fi
   (( rc == 0 )) || die "pool lease 실패 (rc=$rc)"
@@ -121,6 +140,9 @@ if (( ! resume )) && [[ -n "$mbot" ]]; then
   [[ -n "$sel_model" ]] || { m="$(worker_field "$mbot" 3 || true)"; model="${m:-$model}"; }
   [[ -n "$sel_effort" ]] || { m="$(worker_field "$mbot" 4 || true)"; effort="${m:-$effort}"; }
 fi
+# 배정 메시지용 한 단어 표시: (모델/effort · 자동|지정|기본)
+case "$route_source" in jev) route_label=자동;; user) route_label=지정;; *) route_label=기본;; esac
+route_tag="(${model:-기본}/${effort:-기본} · $route_label)"
 
 # 4. 작업 디렉터리 (child worktree). 재개는 이전 경로 그대로.
 worktree_mode="new"; work_path="$proj_path"
@@ -208,7 +230,7 @@ reg_extra="$(python3 -c 'import json,sys;a=sys.argv;print(json.dumps(dict(engine
   "$engine" "$guild" "$owner" "$jarvis_app_id" "$sd" "$ORCH_ROOT/roles/작업자-grok.md" "$(route_get '["emojis"]["working"]' 2>/dev/null || true)" "$(route_get '["grokSandbox"]' 2>/dev/null || true)")"
 
 if (( dry )); then
-  print -- "model=$model effort=$effort"
+  print -- "model=$model effort=$effort level=$route_level confidence=$route_conf source=${route_source:-default} route=$route_tag"
   [[ "$engine" == claude ]] || { print -- "--- registry extra ---"; print -r -- "$reg_extra" | python3 -m json.tool --no-ensure-ascii; }
   print -- "--- access.json ($sd) ---"; print -r -- "$access" | python3 -m json.tool
   print -- "--- prompt ($prompt_file) ---"; cat "$prompt_file"
@@ -219,8 +241,8 @@ fi
 
 # 8. 등록부를 먼저 active 로 (terminalHandle 은 비움). baseRef 는 자비스의 diff 기준.
 base_ref="$(git -C "$work_path" rev-parse HEAD 2>/dev/null || true)"
-registry_write "$thread" "$(python3 -c 'import json,sys;a=sys.argv;print(json.dumps(dict(threadId=a[1],channelId=a[2],project=a[3],path=a[4],projectPath=a[5],worktreeMode=a[6],bot=a[7],terminalHandle="",promptFile=a[8],status="active",startedAt=a[9],endedAt=None,taskTitle=a[10],model=a[11],effort=a[12],baseRef=a[13],sessionId=a[14],resumed=a[15]=="1",currentRequest=a[16],requestMessageId=a[17],**json.loads(a[18])),ensure_ascii=False))' \
-  "$thread" "$channel" "$project" "$work_path" "$proj_path" "$worktree_mode" "$bot" "$prompt_file" "$(now)" "$title" "$model" "$effort" "$base_ref" "$sid" "$resume" "$request" "$request_id" "$reg_extra")"
+registry_write "$thread" "$(python3 -c 'import json,sys;a=sys.argv;print(json.dumps(dict(threadId=a[1],channelId=a[2],project=a[3],path=a[4],projectPath=a[5],worktreeMode=a[6],bot=a[7],terminalHandle="",promptFile=a[8],status="active",startedAt=a[9],endedAt=None,taskTitle=a[10],model=a[11],effort=a[12],baseRef=a[13],sessionId=a[14],resumed=a[15]=="1",currentRequest=a[16],requestMessageId=a[17],routeLevel=a[19],routeConfidence=a[20],routeSource=a[21] or "default",**json.loads(a[18])),ensure_ascii=False))' \
+  "$thread" "$channel" "$project" "$work_path" "$proj_path" "$worktree_mode" "$bot" "$prompt_file" "$(now)" "$title" "$model" "$effort" "$base_ref" "$sid" "$resume" "$request" "$request_id" "$reg_extra" "$route_level" "$route_conf" "$route_source")"
 
 # 9. 실행. 실패 경로 전체에서 등록부 failed + 풀 반납.
 state_created=1
@@ -278,6 +300,6 @@ fi
 mkdir -p "$ORCH_ROOT/runs/$project"
 print -- "- $(date +%H:%M) $( (( resume )) && print -n resumed || print -n spawned ) $bot thread=$thread title=\"$title\" worktree=$worktree_mode" >> "$ORCH_ROOT/runs/$project/$(date +%Y-%m-%d).md"
 disp="$(route_get "[\"botDisplay\"][\"$bot\"]" 2>/dev/null || print -- "$bot")"
-ops_log "$bot" "▶ $disp 배정 — $project · $title"
-print -- "bot=$bot display=$disp terminal=$handle plugin=$plugin_state$( [[ "$engine" == claude ]] || print -n " engine=$engine" )"
+ops_log "$bot" "▶ $disp 배정 — $project · $title $route_tag"
+print -- "bot=$bot display=$disp terminal=$handle plugin=$plugin_state$( [[ "$engine" == claude ]] || print -n " engine=$engine" ) route=$route_tag"
 spawned=1

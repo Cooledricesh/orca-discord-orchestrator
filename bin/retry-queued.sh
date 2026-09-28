@@ -15,6 +15,9 @@ for field in model effort; do
   value="$(registry_get "$thread" "$field")"; [[ -n "$value" ]] || continue
   if [[ "$(registry_get "$thread" "explicit${(C)field}")" == False ]]; then qargs+=("--default-$field" "$value"); else qargs+=("--$field" "$value"); fi
 done
+# 대기 시점의 난이도 판정을 그대로 넘긴다 (재시도에서 다시 분류하지 않는다)
+[[ -z "$(registry_get "$thread" routeSource)" ]] || qargs+=(--route-source "$(registry_get "$thread" routeSource)" \
+  --route-level "$(registry_get "$thread" routeLevel)" --route-confidence "$(registry_get "$thread" routeConfidence)")
 for field in engine bot; do
   value="$(registry_get "$thread" "$field")"; [[ -z "$value" ]] || qargs+=("--$field" "$value")
 done

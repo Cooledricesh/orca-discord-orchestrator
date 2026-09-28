@@ -112,6 +112,10 @@ Claude 봇은 Claude 모델만, 그록 봇은 `grok models` 목록의 모델만,
 재시작 실패 시 설정 저장과 적용 실패를 구분해 알리며 `!모델`에서도 결과를 볼 수 있다. 주기 감시나 모델 호출은 추가하지 않는다.
 플러그인 코드 배포 후 실행 중인 프라이데이의 `/mcp`에서 `plugin:discord-orca:discord`를 Reconnect해야 한다.
 
+### 접수 난이도 라우팅 (Jev)
+
+`spawn-worker.sh`는 `--model`/`--effort`가 없고 claude 엔진의 새 작업이면 `bin/classify-request.py`로 요청 본문과 프로젝트 이름만 Jev(`typesafe/jev-1.13-20260917`, OpenRouter)에 보내 `simple|standard|hard`를 받는다. 매핑은 `routes.json`의 `jevRouting`(없으면 내장 기본값: simple→sonnet/medium, standard→`models.작업자`, hard→fable/high, `threshold` 0.85, `timeoutSec` 3, `enabled`)이다. 우선순위는 사용자 명시(해피의 `--model`/`--effort`) > 봇 항목 model/effort > Jev > 엔진 기본값이며 Grok 엔진·재개는 분류하지 않는다. 키(`$BOTS_DIR/openrouter.env`의 `OPENROUTER_API_KEY` 또는 같은 이름의 환경변수) 없음·API 실패·타임아웃·확신도 미달은 기본값으로 스폰한다. 등록부에 `routeLevel`·`routeConfidence`·`routeSource`(user|jev|default)를 남기고 대기열 재시도는 이 판정을 그대로 쓴다. 배정 표시는 `(opus/medium · 자동|지정|기본)`. 확인은 `spawn-worker.sh <채널> <스레드> --request-file <f> --dry-run`의 `model=… source=…` 줄과 stderr `난이도 분류:` 줄(`reason=`)로 한다.
+
 ### 마크 서브에이전트 모델 티어
 
 마크가 Agent 툴로 위임할 때 작업 종류별로 모델을 고른다. 탐색·grep·파일 훑기·웹검색·문서 읽기는 sonnet, 정형 반복(고정 패턴 변환·대량 단순 편집·포맷 맞추기)은 haiku, 일반 구현·조사 종합·리뷰는 opus(마크 기본), 복잡한 설계·난이도 높은 디버깅·사용자가 "fable로" 라고 한 작업은 fable.
