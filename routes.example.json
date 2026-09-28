@@ -56,6 +56,13 @@
       "hard": {"model": "fable", "effort": "high"}
     }
   },
+  "toolGate": {
+    "mode": "shadow",
+    "model": "typesafe/jev-1.13-20260917",
+    "threshold": 0.85,
+    "notify": false,
+    "_comment": "마크 Bash 게이트. shadow=기록만 / enforce=deny 차단·ask 는 스레드 확인 요청 후 정지 / off. 키: $BOTS_DIR/openrouter.env. docs/ADMIN.md 툴 게이트 참고"
+  },
   "stateRoot": "~/.claude/channels",
   "channelsFlag": "plugin:discord-orca@orca-local",
   "codexAuthFile": "",

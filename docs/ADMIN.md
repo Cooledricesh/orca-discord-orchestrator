@@ -156,6 +156,22 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 대화를 유지하며 적용할 때는 해당 세션 cwd의 `.claude/settings.local.json`에 같은 훅을 병합할 수 있다.
 기존 설정을 덮어쓰지 않는다.
 
+## 툴 게이트 (Jev, 마크 Bash)
+
+`templates/progress-settings.json`의 PreToolUse(matcher `Bash`)로 `bin/tool-gate.py`가 마크의 Bash 호출마다 돈다
+(`ORCA_THREAD_ID` 없는 상시 세션·그록·자비스는 대상 아님). 읽기 전용 셸·git 조회·`post-result.sh`/`finish-worker.sh`는
+정규식·토큰 규칙으로 바로 allow, 나머지는 OpenRouter Decisions API의 Jev(`toolGate.model`)에 State/Choice(allow·ask·deny)로 묻는다.
+최종 판정은 코드가 한다: 확신도가 `threshold`(기본 0.85) 미만이면 allow·deny 모두 ask. 키는 `$BOTS_DIR/openrouter.env`의
+`OPENROUTER_API_KEY=` 한 줄이며, 키 없음·3.5초 타임아웃·네트워크·응답 형식 오류는 allow(fail-open)하고 기록에 `error`를 남긴다.
+기록은 `state/tool-gate/<스레드>.jsonl`(ts·command 앞 300자·decision·verdict·confidence·ms·mode·source·error).
+`routes.json` `toolGate.mode`: `shadow`(기본, 판정·기록만 하고 훅은 즉시 반환 — 분리 자식이 처리), `enforce`, `off`.
+`toolGate.notify: true`면 섀도에서 ask/deny 판정을 스레드에 한 줄 알린다(기본 off).
+**enforce 전환**: 섀도 기록에서 오판(`source=jev`인데 부당한 ask/deny)을 먼저 확인한 뒤 `toolGate.mode`를 `"enforce"`로 바꾼다.
+훅이 매번 설정을 읽으므로 재시작은 필요 없다. enforce는 동기 판정이며 deny는 차단, ask는 차단 + "스레드에 소유자 확인을 요청하고
+기다려라"는 사유를 모델에 돌려준다(Claude의 `ask` 결정은 터미널 확인을 띄워 마크가 멈추므로 쓰지 않는다).
+미구현 설계: ask 때 게이트가 스레드에 확인 버튼을 올리고 소유자 승인을 `state/tool-gate/<스레드>.approvals.json`에 명령 해시로 기록하면,
+같은 명령 재시도 시 게이트가 allow하는 확인-대기 UX.
+
 ## 자동 실행 등록
 
 수동 사용 확인 후 실행한다. 아래 작업은 봇을 실제로 기동한다. 생성 단계만으로는 등록·기동되지 않는다.

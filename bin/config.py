@@ -10,6 +10,8 @@ import sys
 SOURCE_ROOT = Path(__file__).resolve().parent.parent
 ROLES = ("상담역", "접수원", "작업자", "리뷰어", "비전")
 ENGINES = ("claude", "grok")
+TOOL_GATE_MODES = ("shadow", "enforce", "off")
+TOOL_GATE_DEFAULTS = {"mode": "shadow", "model": "typesafe/jev-1.13-20260917", "threshold": 0.85, "notify": False}
 
 
 def absolute(value):
@@ -36,6 +38,8 @@ def load_routes():
             raise ValueError("bots.workers: expected array")
         if any(not isinstance(r, dict) for r in data.get("routes", {}).values()):
             raise ValueError("routes: expected route objects")
+        if not isinstance(data.get("toolGate", {}), dict):
+            raise ValueError("toolGate: expected object")
         for key in ("stateRoot", "codexAuthFile"):
             if key in data and not isinstance(data[key], str):
                 raise ValueError(f"{key}: expected path string")
@@ -66,6 +70,21 @@ def worker_entries(data):
         result.append({"name": item.get("name", ""), "engine": item.get("engine", "claude"),
                        "model": item.get("model", ""), "effort": item.get("effort", "")})
     return result
+
+
+def tool_gate(data):
+    """toolGate 설정 + 기본값. 잘못된 값은 기본값으로 (훅은 설정 오류로 마크를 막지 않는다)."""
+    raw = data.get("toolGate") if isinstance(data.get("toolGate"), dict) else {}
+    cfg = dict(TOOL_GATE_DEFAULTS)
+    if raw.get("mode") in TOOL_GATE_MODES:
+        cfg["mode"] = raw["mode"]
+    if isinstance(raw.get("model"), str) and raw["model"]:
+        cfg["model"] = raw["model"]
+    if type(raw.get("threshold")) in (int, float) and 0 < raw["threshold"] <= 1:
+        cfg["threshold"] = float(raw["threshold"])
+    if isinstance(raw.get("notify"), bool):
+        cfg["notify"] = raw["notify"]
+    return cfg
 
 
 def role_enabled(data, role):

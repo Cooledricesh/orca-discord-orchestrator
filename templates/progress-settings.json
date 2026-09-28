@@ -1,7 +1,8 @@
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "python3 \"$ORCH_ROOT/bin/progress-hook.py\"", "timeout": 5 } ] }
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "python3 \"$ORCH_ROOT/bin/progress-hook.py\"", "timeout": 5 } ] },
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 \"$ORCH_ROOT/bin/tool-gate.py\"", "timeout": 5 } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "python3 \"$ORCH_ROOT/bin/progress-hook.py\"", "timeout": 5 } ] }
