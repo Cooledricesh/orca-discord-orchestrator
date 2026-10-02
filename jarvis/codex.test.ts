@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readlinkSync, lstatSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readlinkSync, lstatSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { linkAuthFile, isAuthError, authFailureNotice } from './codex.ts'
 
 const auth = (at: string, rt = 'dummy') => JSON.stringify({ last_refresh: at, tokens: { refresh_token: rt } })
@@ -53,6 +53,28 @@ test('source that is the dst itself stays a regular file', () => withDir(d => {
   expect(lstatSync(own).isSymbolicLink()).toBe(false)
 }))
 
+test('source alias pointing at the regular dst is ok and dst is untouched', () => withDir((d, _src, dst) => {
+  writeFileSync(dst, auth('2026-10-01T00:00:00Z', 'own'))
+  const alias = join(d, 'alias.json'); symlinkSync(dst, alias)
+  expect(linkAuthFile(alias, dst)).toBe('ok')
+  expect(lstatSync(dst).isSymbolicLink()).toBe(false)
+  expect(JSON.parse(readFileSync(dst, 'utf8')).tokens.refresh_token).toBe('own')
+}))
+
+test('relative source becomes an absolute, readable link', () => withDir((_d, src, dst) => {
+  writeFileSync(src, auth('2026-10-01T00:00:00Z', 'rel'))
+  expect(linkAuthFile(relative(process.cwd(), src), dst)).toBe('linked')
+  expect(readlinkSync(dst)).toBe(src)
+  expect(JSON.parse(readFileSync(dst, 'utf8')).tokens.refresh_token).toBe('rel')
+}))
+
+test('dangling dst link is replaced', () => withDir((d, src, dst) => {
+  writeFileSync(src, auth('2026-10-01T00:00:00Z'))
+  symlinkSync(join(d, 'gone.json'), dst)
+  expect(linkAuthFile(src, dst)).toBe('linked')
+  expect(readlinkSync(dst)).toBe(src)
+}))
+
 test('missing source throws', () => withDir((_d, src, dst) => {
   expect(() => linkAuthFile(src, dst)).toThrow('Codex 인증 파일 없음')
 }))
@@ -63,10 +85,13 @@ test('auth errors are recognized and the notice names the login command', () => 
     'workspace routing discovery unauthorized (401)',
     'Codex 인증 파일 없음: /x/auth.json — codex login 또는 codexAuthFile 설정',
     'Not logged in',
+    'unexpected status 401 Unauthorized',
+    'HTTP 401',
   ]) expect(isAuthError(m)).toBe(true)
-  for (const m of ['시간 초과로 중단', 'codex 종료 코드 1: some stack trace']) expect(isAuthError(m)).toBe(false)
+  for (const m of ['시간 초과로 중단', 'codex 종료 코드 1: some stack trace', 'codex 종료 코드 1: Error at parser.ts:401:12']) expect(isAuthError(m)).toBe(false)
   const n = authFailureNotice('bad\n  token   401', '/Users/me/Application Support/codex/auth.json')
   expect(n).toContain('bad token 401')
   expect(n).toContain('CODEX_HOME="/Users/me/Application Support/codex" codex login')
   expect(n.length).toBeLessThan(1900)
+  expect(authFailureNotice('401', '/a/auth.json', true)).toContain('server.ts" reauth')
 })

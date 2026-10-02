@@ -16,7 +16,7 @@ import {
 } from './state.ts'
 import { resolveTarget, gitBlock, formatHistory, buildPrompt, discordMessageText, type HistMsg, type Target } from './context.ts'
 import {
-  prepareCodexHome, runTurn, recoverFinalMessage, deleteSessionFile, killAllChildren, inflightChildren, ensureAuthLink, isAuthError, authFailureNotice, type TurnResult,
+  prepareCodexHome, runTurn, recoverFinalMessage, deleteSessionFile, killAllChildren, inflightChildren, ensureAuthLink, isAuthError, authFailureNotice, type TurnResult, type AuthLink,
 } from './codex.ts'
 import { Semaphore, PerKeyQueue } from './queue.ts'
 import { buildFinal, ProgressReporter, summarizeProgress, ConsolePoster, DiscordPoster, type Poster } from './post.ts'
@@ -129,11 +129,13 @@ class Jarvis {
     const sections = prompt.split('\n').filter(l => l.startsWith('## ')).join(', ')
     log(`[${req.chatId}] turn ${turn} start (${isFirst ? 'new' : 'resume ' + st.codexThreadId}) cwd=${target.cwd} prompt=${prompt.length}c hist=${capped.length} sections=[${sections}]`)
     let res: TurnResult
+    let authLink: AuthLink | null = null
     try {
       // 매 턴 전 auth.json 링크 재확인. 원본이 없으면 codex 를 돌리지 않고 실패 결과로 같은 경로를 탄다.
       let authErr: string | null = null
       try {
-        if (ensureAuthLink(cfg) === 'kept-newer' && !this.keptNewerWarned) {
+        authLink = ensureAuthLink(cfg)
+        if (authLink === 'kept-newer' && !this.keptNewerWarned) {
           this.keptNewerWarned = true
           void this.opsLog('⚠️ 자비스 Codex 인증 파일이 원본보다 새것이라 링크하지 않고 유지 중 — 원본 계정 로그인 상태를 확인한 뒤 `bun jarvis/server.ts reauth`').catch(() => {})
         }
@@ -161,13 +163,14 @@ class Jarvis {
       // 실패·중단은 중간 출력이 있어도 정상 결과로 게시하지 않는다. 있으면 "미완료" 로 표시해 붙인다.
       const authFail = !res.aborted && isAuthError(res.error)
       const why = res.aborted ? `⏱ ${cfg.review.timeoutMin}분 안에 끝나지 않아 중단했습니다. 범위를 좁혀 다시 멘션해 주세요.`
-        : authFail ? authFailureNotice(res.error, authSource(cfg.routes)) : `❌ 자비스 실행 실패: ${res.error}`
+        : authFail ? authFailureNotice(res.error, authSource(cfg.routes), authLink === 'kept-newer') : `❌ 자비스 실행 실패: ${res.error}`
       if (authFail) void this.opsLog(`⚠️ 자비스 검수 실패 — Codex 로그인 문제 (<#${req.chatId}>): ${res.error.replace(/\s+/g, ' ').trim().slice(0, 200)} · 조치: 원본 Codex 계정 재로그인 후 다시 멘션`).catch(() => {})
       log(`[${req.chatId}] turn ${turn} failed after ${secs}s: ${res.error}${res.finalText ? ` (partial ${res.finalText.length}c)` : ''}`)
       const payload = res.finalText
         ? buildFinal(`${why}\n\n⚠️ 아래는 중단 전까지의 미완료 출력입니다.\n\n${res.finalText}`, { project: target.project, chatId: req.chatId, turn })
         : { content: why }
-      ids = await req.poster.postFinal(progressId, payload)
+      // 실패 턴은 이미 끝났다: 안내 게시가 실패해도 상태(inflight 해제)는 저장한다
+      try { ids = await req.poster.postFinal(progressId, payload) } catch (e) { log(`[${req.chatId}] failure notice post failed: ${e}`); ids = [] }
     } else {
       const color = cfg.routes.botColors?.[cfg.botName]
       const payload = buildFinal(res.finalText, { project: target.project, chatId: req.chatId, turn, color })

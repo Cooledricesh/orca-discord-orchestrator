@@ -1,6 +1,6 @@
 // Codex CLI 호출 (codex exec --json / exec resume <id> --json). 단일 코드 경로.
 // CODEX_HOME=state/jarvis/codex-home 로 격리. auth.json 은 원본 인증 파일(authSource)로의 심볼릭 링크, 절대 출력하지 않는다.
-import { existsSync, readFileSync, writeFileSync, chmodSync, readdirSync, statSync, rmSync, mkdirSync, lstatSync, readlinkSync, symlinkSync, renameSync, type Stats } from 'fs'
+import { existsSync, readFileSync, writeFileSync, chmodSync, readdirSync, statSync, rmSync, mkdirSync, lstatSync, realpathSync, symlinkSync, renameSync, type Stats } from 'fs'
 import { dirname, join, resolve } from 'path'
 import { createHash } from 'crypto'
 import { CODEX_HOME, authSource, ROLE_FILE, type Config } from './config.ts'
@@ -24,7 +24,8 @@ export function prepareCodexHome(cfg: Config, opts: { reauth?: boolean } = {}): 
   writeFileSync(join(CODEX_HOME, 'config.toml'), toml)
   // auth.json 은 원본으로의 링크. 복사본은 원본과 refresh token 을 따로 들고 있다가 먼저 갱신한 쪽이 다른 쪽을
   // 무효화했다(refresh token already used / 401). codex 는 auth.json 을 제자리에 다시 쓰고(링크 따라감, rename 없음)
-  // 갱신 전 파일을 다시 읽으므로 한 파일 공유 = 한 토큰 계보. 강제 재링크는 `server.ts reauth`.
+  // 갱신 전 파일을 다시 읽으므로 한 파일을 공유하면 복사본의 별도 토큰 계보가 없어진다. 단 프로세스 간 동시 갱신은
+  // 직렬화되지 않는다(codex 파일 잠금 없음) — 같은 홈에서 codex 세션 여럿을 돌릴 때와 같은 조건. 강제 재링크는 `server.ts reauth`.
   ensureAuthLink(cfg, opts)
   return roleVersion
 }
@@ -38,11 +39,12 @@ function lastRefresh(file: string): number {
 
 /** dst 를 source 로의 심볼릭 링크로 맞춘다. 순수 함수(로그 없음). 원본보다 새 일반 파일은 force 없이 건드리지 않는다. */
 export function linkAuthFile(source: string, dst: string, force = false): AuthLink {
+  source = resolve(source) // 존재 확인과 링크 대상이 같은 절대 경로여야 한다 (상대 경로는 dst 기준으로 풀려 끊긴 링크가 된다)
   if (!existsSync(source)) throw new Error(`Codex 인증 파일 없음: ${source} — codex login 또는 codexAuthFile 설정`)
+  // 실제 경로가 같으면 그대로: 올바른 링크, 원본이 자비스 자신의 파일(전용 로그인), 원본이 dst 를 가리키는 별칭 링크. 끊긴 링크는 throw → 재링크
+  try { if (realpathSync(dst) === realpathSync(source)) return 'ok' } catch {}
   let st: Stats | null = null
   try { st = lstatSync(dst) } catch {}
-  if (st && !st.isSymbolicLink() && resolve(source) === resolve(dst)) return 'ok' // 원본이 자비스 자신의 파일 (전용 로그인)
-  if (st?.isSymbolicLink() && readlinkSync(dst) === source) return 'ok'
   if (st?.isFile() && !force && lastRefresh(dst) > lastRefresh(source)) return 'kept-newer'
   // 임시 이름에 링크를 만든 뒤 rename 으로 원자 교체 (끊긴/엉뚱한 링크, 오래된 복사본 모두)
   const tmp = `${dst}.link-${process.pid}`
@@ -62,15 +64,19 @@ export function ensureAuthLink(cfg: Config, opts: { reauth?: boolean } = {}): Au
 
 /** Codex 로그인·인증 실패 여부 (스레드 안내·#운영-로그 알림용). */
 export function isAuthError(msg: string): boolean {
-  return /\b401\b|unauthorized|refresh token|sign in again|not logged in|인증 파일 없음/i.test(msg)
+  // 401 은 HTTP/인증 문맥에서만 (스택 트레이스의 parser.ts:401:12 같은 줄 번호 오탐 방지)
+  return /unauthorized|\(401\)|(?:status|http)\D{0,12}401\b|refresh token|sign in again|not logged in|인증 파일 없음/i.test(msg)
 }
 
-/** 인증 실패 시 스레드에 남길 안내 (Discord 마크다운). */
-export function authFailureNotice(error: string, source: string): string {
+/** 인증 실패 시 스레드에 남길 안내 (Discord 마크다운). detached: 자비스가 링크가 아닌 원본보다 새 별도 파일을 쓰는 중('kept-newer'). */
+export function authFailureNotice(error: string, source: string, detached = false): string {
+  const tail = detached
+    ? `자비스는 지금 원본보다 새 별도 인증 파일을 쓰고 있으므로, 재로그인 후 오케스트레이터 폴더에서 \`zsh -c 'source ./bin/lib.sh; bun "$ORCH_ROOT/jarvis/server.ts" reauth'\` 를 실행해 주세요.`
+    : `자비스는 그 인증 파일을 직접 쓰므로 재시작·reauth 는 필요 없습니다.`
   return [
     `❌ Codex 로그인 문제로 검수에 실패했습니다.`,
     `- 오류: ${error.replace(/\s+/g, ' ').trim().slice(0, 300)}`,
-    `- 조치: 원본 Codex 계정에 다시 로그인한 뒤 같은 요청을 다시 멘션해 주세요 (Orca 에서 해당 Codex 계정 재로그인, 또는 터미널에서 \`CODEX_HOME="${dirname(source)}" codex login\`). 자비스는 그 인증 파일을 링크로 직접 쓰므로 재시작·reauth 는 필요 없습니다.`,
+    `- 조치: 원본 Codex 계정에 다시 로그인한 뒤 같은 요청을 다시 멘션해 주세요 (Orca 에서 해당 Codex 계정 재로그인, 또는 터미널에서 \`CODEX_HOME="${dirname(source)}" codex login\`). ${tail}`,
   ].join('\n')
 }
 
