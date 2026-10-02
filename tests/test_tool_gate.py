@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from unittest.mock import Mock
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -342,6 +343,16 @@ class TallyTests(unittest.TestCase):
             msg = gate.review_message(s, "42")
             self.assertTrue(msg.startswith("<@42>"))
             self.assertIn("ask 2", msg)
+
+    def test_review_notice_goes_to_review_channel_then_ops(self):
+        routes = {"ownerUserId": "42", "opsLogChannelId": "ops"}
+        for ok, want in ((True, ["/channels/th/messages"]), (False, ["/channels/th/messages", "/channels/ops/messages"])):
+            api = Mock(return_value={"id": "1"} if ok else None)
+            with self.subTest(ok=ok), unittest.mock.patch.object(gate, "discord_api", return_value=("tok", api)), \
+                    unittest.mock.patch.object(config, "load_routes", return_value=routes):
+                gate.notify_review({"since": "2026-10-02", "total": 1, "rule": 0, "jev": 1, "decisions": {}, "lowConfidence": 0,
+                                    "errors": {}, "threads": ["a"], "reviewChannel": "th"})
+                self.assertEqual([c.args[2] for c in api.call_args_list], want)
 
 
 if __name__ == "__main__":

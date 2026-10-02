@@ -178,6 +178,7 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 `routes.json` `toolGate.mode`: `shadow`(기본, 판정·기록만 하고 훅은 즉시 반환 — 분리 자식이 처리), `enforce`, `off`.
 섀도 누적 집계는 `state/tool-gate/summary.json`이며, Jev 판정 수·마크 작업 수가 `toolGate.reviewAt`(기본 50건·10개)에
 처음 닿으면 운영 로그 채널에 소유자 멘션으로 검토 알림(판정 분포·확신도 미달·fail-open 수)을 한 번 올린다. 다시 받으려면 `summary.json`을 지운다.
+`summary.json`에 `"reviewChannel": "<스레드·채널 ID>"`를 넣으면 그쪽으로 보낸다(보관된 스레드도 글을 올리면 다시 열린다). 실패하면 운영 로그 채널.
 `toolGate.notify: true`면 섀도에서 ask/deny 판정을 스레드에 한 줄 알린다(기본 off).
 **재측정**: 규칙·질문을 바꾼 뒤에는 `summary.json`을 보관(`summary-<날짜>.json`)하고 새로 집계한다(`qv`로 새 기록만 본다).
 재알림 후 부당 ask 비율이 10% 아래면 enforce.

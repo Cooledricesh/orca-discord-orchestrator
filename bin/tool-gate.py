@@ -509,11 +509,15 @@ def review_message(s: dict, owner: str) -> str:
 def notify_review(s: dict) -> None:
     from config import load_routes
     routes = load_routes()
-    channel, owner = routes.get("opsLogChannelId"), routes.get("ownerUserId")
+    owner = routes.get("ownerUserId")
     token, api = discord_api()
-    if token and channel and owner:
-        api(token, "POST", f"/channels/{channel}/messages",
-            {"content": review_message(s, owner), "allowed_mentions": {"users": [owner]}})
+    if not (token and owner):
+        return
+    body = {"content": review_message(s, owner), "allowed_mentions": {"users": [owner]}}
+    # summary.json reviewChannel(검토를 맡은 스레드 등)이 있으면 거기로, 실패하면 운영 로그 채널로
+    for channel in dict.fromkeys(c for c in (s.get("reviewChannel"), routes.get("opsLogChannelId")) if c):
+        if api(token, "POST", f"/channels/{channel}/messages", body):
+            return
 
 
 def notify(thread: str, rec: dict) -> None:
