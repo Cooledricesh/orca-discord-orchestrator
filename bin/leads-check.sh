@@ -45,7 +45,10 @@ for role in 상담역 접수원; do
   role_enabled "$role" || continue
   if alive "$role"; then check_plugin "$role" "$(route_get "[\"bots\"][\"$role\"]") ($role)" "$(cat "$STATE_DIR_ROOT/leads/$role.pid")"; fi
 done
-registry_list active | while IFS=$'\t' read -r tid st project bot handle started; do
+registry_list active | while IFS= read -r line; do
+  [[ -n "$line" ]] || continue
+  registry_split "$line"
+  tid="${fields[1]-}"; project="${fields[3]-}"; bot="${fields[4]-}"
   [[ -n "$tid" ]] || continue
   p="$(cat "$THREADS_DIR/$tid.pid" 2>/dev/null || true)"; pid_is "$p" claude || continue   # 죽은 터미널은 sweep 담당
   check_plugin "worker-$tid" "$bot ($project, 스레드 $tid)" "$p"

@@ -45,7 +45,9 @@ if [[ "$engine" == grok && -n "$project" ]] && usage="$(grok_usage_line "$(regis
   print -- "  - grok usage: $usage" >> "$ORCH_ROOT/runs/$project/$(date +%Y-%m-%d).md"
 fi
 
-# 대기열: 봇이 반납됐으니 같은 엔진(봇 지정이면 그 봇)의 queued 하나를 스폰한다. 이 프로세스가 곧 죽어도 살아남도록 nohup + disown.
+# 대기열: 봇이 반납됐으니 같은 엔진(봇 지정이면 그 봇)의 queued 하나를 스폰한다.
+# nohup 은 같은 프로세스 그룹에 남는다. 이어서 터미널을 닫으면(등록 handle --tab, worktree --all 모두) 같이 죽는다.
+# 터미널을 닫기 전에 새 세션의 손자로 분리한다.
 q=""
 for c in ${(f)"$(registry_list queued | cut -f1 || true)"}; do
   [[ "$(registry_engine "$c")" == "$engine" ]] || continue
@@ -54,7 +56,11 @@ for c in ${(f)"$(registry_list queued | cut -f1 || true)"}; do
 done
 if [[ -n "$q" ]]; then
   log "대기열 스폰: $q"
-  nohup "$ORCH_ROOT/bin/retry-queued.sh" "$q" >> "$STATE_DIR_ROOT/log/queue-spawn.log" 2>&1 &!
+  mkdir -p "$STATE_DIR_ROOT/log"
+  if ! detach_spawn "$STATE_DIR_ROOT/log/queue-spawn.log" /bin/zsh "$ORCH_ROOT/bin/retry-queued.sh" "$q"; then
+    log "대기열 스폰을 분리하지 못했습니다: $q"
+    notify_thread "$(registry_get "$q" bot)" "$q" "⚠️ 대기열에서 작업을 시작하지 못했습니다 ($(registry_get "$q" project), 스레드 $q). 호출 터미널과 분리하지 못했습니다."
+  fi
 fi
 [[ -n "$bot" ]] && ops_log "$bot" "$prefix $(route_get "[\"botDisplay\"][\"$bot\"]" 2>/dev/null || print -- "$bot") 종료 ($st) — $project · $(registry_get "$thread" taskTitle)"
 print -- "finished thread=$thread status=$st bot=${bot:-?}"

@@ -171,6 +171,104 @@ for r in sorted(rows, key=lambda r: (r.get("queuedAt") or r.get("startedAt") or 
     print("\t".join(str(r.get(k) or "") for k in ("threadId","status","project","bot","terminalHandle","startedAt")))
 PY
 }
+# registry_split <한 줄> → 전역 배열 fields. 빈 칸을 유지한다.
+# IFS=$'\t' read 는 탭을 공백으로 보아 연속 탭을 한 칸으로 합친다. handle 이 비면 startedAt 이 handle 이 된다.
+registry_split() {
+  fields=("${(@ps:\t:)1}")
+}
+# spawn_lock_held <threadId> → 스폰/종료 락이 잡혀 있으면 0. 락을 잡지 않고 조회만 한다.
+spawn_lock_held() {
+  python3 - "$THREADS_DIR/$1.spawn.lock" <<'PY'
+import fcntl, os, struct, sys
+path = sys.argv[1]
+if not os.path.exists(path):
+    raise SystemExit(1)
+fd = os.open(path, os.O_RDWR)
+try:
+    # macOS flock 구조 (l_start, l_len, l_pid, l_type, l_whence). F_GETLK 는 락을 빼앗지 않는다.
+    query = struct.pack("qqihh", 0, 0, 0, fcntl.F_WRLCK, 0)
+    kind = struct.unpack("qqihh", fcntl.fcntl(fd, fcntl.F_GETLK, query))[3]
+    raise SystemExit(0 if kind != fcntl.F_UNLCK else 1)
+except OSError:
+    raise SystemExit(0)
+finally:
+    os.close(fd)
+PY
+}
+# detach_spawn <logfile> <argv...>
+# 새 세션의 손자로 실행한다. 호출 터미널의 프로세스 그룹이 죽어도, 부모의 락 fd 를 물려받지도 않는다.
+detach_spawn() {
+  local log="$1"; shift
+  [[ $# -gt 0 && -n "$log" ]] || return 1
+  python3 - "$log" "$@" <<'PY'
+import os, sys
+log, *argv = sys.argv[1:]
+pid = os.fork()
+if pid > 0:
+    _, status = os.waitpid(pid, 0)
+    raise SystemExit(0 if os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0 else 1)
+try:
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+except Exception:
+    os._exit(1)
+os.chdir("/")
+os.environ.pop("ORCA_WORKER_SPAWN_LOCK_FD", None)
+os.environ.pop("ORCA_WORKER_SPAWN_LOCK_PARENT", None)
+try:
+    limit = min(int(os.sysconf("SC_OPEN_MAX")), 4096)
+except (OSError, ValueError):
+    limit = 256
+os.closerange(3, max(limit, 4))
+fd = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+os.dup2(fd, 1)
+os.dup2(fd, 2)
+if fd > 2:
+    os.close(fd)
+dn = os.open(os.devnull, os.O_RDONLY)
+os.dup2(dn, 0)
+if dn > 2:
+    os.close(dn)
+os.execv(argv[0], argv)
+os._exit(127)
+PY
+}
+# notify_thread <bot> <threadId> <message> → 스레드와 #운영-로그. 봇이 없으면 운영 로그만.
+notify_thread() {
+  local bot="$1" thread="$2" msg="$3" who="$1"
+  [[ -n "$who" ]] || who="$(ops_bot 2>/dev/null || true)"
+  [[ -n "$who" ]] && ops_log "$who" "$msg"
+  [[ -n "$bot" && "$thread" == <-> ]] || return 0
+  discord_api "$bot" POST "/channels/$thread/messages" "$(python3 -c 'import json,sys;print(json.dumps({"content":sys.argv[1],"allowed_mentions":{"parse":[]}}))' "$msg")" >/dev/null 2>&1 || true
+}
+# close_worktree_terminals <path>
+# 그 worktree 에 이미 있는 터미널만 닫는다. 작업자 터미널을 만들기 전에만 호출한다.
+close_worktree_terminals() {
+  [[ -n "${1:-}" && -d "$1" ]] || return 0
+  python3 - "$1" "$ORCA_BIN" <<'PY'
+import json, os, subprocess, sys
+wp, orca = sys.argv[1], sys.argv[2]
+try:
+    root = os.path.realpath(wp)
+    r = subprocess.run([orca, "terminal", "list", "--worktree", f"path:{wp}", "--json"], capture_output=True, text=True, timeout=30)
+    terms = json.loads(r.stdout).get("result", {}).get("terminals", []) if r.returncode == 0 else []
+except (OSError, ValueError, subprocess.TimeoutExpired):
+    raise SystemExit(0)
+for t in terms if isinstance(terms, list) else []:
+    handle = t.get("handle") or ""
+    path = t.get("worktreePath") or ""
+    if not handle:
+        continue
+    if path:
+        try:
+            if os.path.realpath(path) != root:
+                continue
+        except OSError:
+            continue
+    subprocess.run([orca, "terminal", "close", "--terminal", handle, "--tab", "--json"], capture_output=True, timeout=30)
+PY
+}
 
 # --- STATE_DIR 생성: mkstate <dir> <봇이름> <access-json> -----------------
 mkstate() {

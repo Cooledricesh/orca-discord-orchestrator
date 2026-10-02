@@ -11,12 +11,24 @@ MAX_AGE_SEC=$((IDLE_MIN*60))
 now_epoch=$(date +%s)
 to_epoch() { python3 -c 'import sys,datetime;print(int(datetime.datetime.strptime(sys.argv[1],"%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc).timestamp()))' "$1" 2>/dev/null || echo "$now_epoch"; }
 
-registry_list active | while IFS=$'\t' read -r tid st project bot handle started; do
+registry_list active | while IFS= read -r line; do
+  [[ -n "$line" ]] || continue
+  registry_split "$line"
+  tid="${fields[1]-}"; st="${fields[2]-}"; project="${fields[3]-}"; bot="${fields[4]-}"; handle="${fields[5]-}"; started="${fields[6]-}"
   [[ -n "$tid" ]] || continue
-  # handle 이 비어 있으면 스폰 진행 중 → 터미널 검사는 건너뛰고 무응답 판정만
+  # handle 이 비어 있으면 아직 터미널이 없다. 락이 잡혀 있으면 스폰이 진행 중이다.
+  # 락이 없으면 기동 프로세스가 이미 죽은 것이다. 다음 sweep(최대 5분)에 자리를 반납한다.
+  if [[ -z "$handle" ]]; then
+    if spawn_lock_held "$tid"; then continue; fi
+    log "스폰 프로세스 없음 → failed: $tid ($bot, $project)"
+    notify_thread "$bot" "$tid" "⚠️ 대기 작업이 시작되지 못했습니다 (${project:-프로젝트 없음}, 스레드 $tid). 기동 프로세스가 터미널을 만들기 전에 끝나 자리를 반납합니다."
+    "$ORCH_ROOT/bin/finish-worker.sh" "$tid" failed || true
+    continue
+  fi
   term=""
-  if [[ -n "$handle" ]] && ! term="$(orca terminal show --terminal "$handle" --json 2>/dev/null)"; then
+  if ! term="$(orca terminal show --terminal "$handle" --json 2>/dev/null)"; then
     log "터미널 없음 → failed: $tid ($bot, $project)"
+    notify_thread "$bot" "$tid" "⚠️ 작업자 터미널이 없어 실패로 정리했습니다 (${project:-프로젝트 없음}, 스레드 $tid). 자리를 반납합니다."
     "$ORCH_ROOT/bin/finish-worker.sh" "$tid" failed || true
     continue
   fi

@@ -3,7 +3,9 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import plistlib
+import shlex
 import shutil
 import subprocess
 import sys
@@ -36,13 +38,26 @@ if a[:2]==['worktree','create']:
         target=str(pathlib.Path(os.environ['TEST_AREA'])/a[a.index('--name')+1])
         ref=a[a.index('--base-branch')+1]
         subprocess.run(['git','-C',source,'worktree','add','--detach',target,ref],check=True,capture_output=True)
-    print(json.dumps({'result':{'worktree':{'path':target},'startupTerminal':{'handle':'term_startup'}}}));sys.exit(0)
+    pathlib.Path(os.environ['TEST_AREA'],'created-worktree').write_text(target)
+    payload={'result':{'worktree':{'path':target}}}
+    handle=os.environ.get('TEST_STARTUP_HANDLE','term_startup')
+    if handle and handle!='none':
+        payload['result']['startupTerminal']={'handle':handle}
+    print(json.dumps(payload));sys.exit(0)
 if a[:2]==['worktree','rm']:
     subprocess.run(['git','worktree','remove','--force',a[a.index('--worktree')+1].removeprefix('path:')],cwd=os.environ['TEST_AREA']+'/project space',check=True,capture_output=True);sys.exit(0)
 if a[:2]==['worktree','list'] and 'TEST_WORKTREES' in os.environ:
     print(json.dumps({'result':{'worktrees':json.loads(os.environ['TEST_WORKTREES'])}}));sys.exit(0)
-if a[:2]==['terminal','list'] and 'TEST_TERMINALS' in os.environ:
-    print(json.dumps({'result':{'terminals':json.loads(os.environ['TEST_TERMINALS'])}}));sys.exit(0)
+if a[:2]==['terminal','list']:
+    if 'TEST_TERMINALS' in os.environ:
+        print(json.dumps({'result':{'terminals':json.loads(os.environ['TEST_TERMINALS'])}}));sys.exit(0)
+    # --worktree 조회만 스폰의 첫 터미널 정리용이다. 인수 없는 list 는 예전처럼 빈 출력이어야
+    # worktrees.py 가 "목록 실패"로 보고 남은 터미널을 닫는다.
+    if '--worktree' in a:
+        created=pathlib.Path(os.environ['TEST_AREA'])/'created-worktree'
+        handle=os.environ.get('TEST_LIST_STARTUP','')
+        terms=[{'handle':handle,'worktreePath':created.read_text().strip()}] if created.exists() and handle else []
+        print(json.dumps({'result':{'terminals':terms}}));sys.exit(0)
 if a[:2]==['terminal','show']:
     print(json.dumps({'result':{'terminal':json.loads(os.environ['TEST_TERMINAL_JSON'])}}));sys.exit(0)
 if a[:2]==['terminal','create']:sys.exit(1)
@@ -390,7 +405,7 @@ class RuntimeTests(unittest.TestCase):
         folder = self.root / "state/threads"
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"{THREAD}.json").write_text(json.dumps({"threadId": THREAD, "status": status, "bot": "마크1", "terminalHandle": "term_worker", "worktreeMode": mode, "path": str(own if mode == "new" else self.project), "projectPath": str(self.project)}))
-        (folder / "999999999999999999.json").write_text(json.dumps({"threadId": "999999999999999999", "status": "active", "worktreeMode": "new", "path": str(other)}))
+        (folder / "999999999999999999.json").write_text(json.dumps({"threadId": "999999999999999999", "status": "active", "worktreeMode": "new", "path": str(other), "terminalHandle": "term_other", "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "project": "other", "bot": "마크1"}))
         worktrees = [{"id": "r::own", "path": str(own), "childWorktreeIds": ["r::child"]}, {"id": "r::child", "path": str(child)},
                      {"id": "r::other", "path": str(other)}, {"id": "r::root", "path": str(self.project)}]
         terminals = [{"handle": f"term_{i}", "worktreePath": str(p)} for i, p in enumerate((own, own, child, other, self.project))] + [{"handle": "term_float", "worktreePath": ""}]
@@ -417,6 +432,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_sweep_closes_leftover_terminals_only_for_finished_threads(self):
         own, child, env = self.finished_worktree_fixture(status="stopped")
+        env["TEST_TERMINAL_JSON"] = json.dumps({"status": "running"})
         folder = self.root / "state/threads"
         with (folder / f"{THREAD}.spawn.lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -703,6 +719,127 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(section(claude, "인계 — 사용자가 요청했을 때만").splitlines()[0], section(grok, "인계 — 사용자가 요청했을 때만").splitlines()[0])
         self.assertIn("worker-discord.sh\" react <requestMessageId>", grok)
 
+
+    def note_discord(self):
+        notes = self.area / "notes"
+        lib = self.root / "bin/lib.sh"
+        lib.write_text(lib.read_text() + f'\ndiscord_api() {{ print -r -- "$4" >> {json.dumps(str(notes))}; print -- "{{}}"; }}\ndiscord_archive_thread() {{ :; }}\nops_log() {{ print -r -- "$2" >> {json.dumps(str(notes))}; }}\n')
+        return notes
+
+    def test_sweep_keeps_locked_spawn_and_fails_dead_spawn_without_terminal(self):
+        """빈 terminalHandle 은 스폰 중이다. read 가 탭을 합치면 startedAt 을 handle 로 보고 실패 처리한다."""
+        notes = self.note_discord()
+        self.assert_ok(self.command("pool.sh", "lease", THREAD))
+        folder = self.root / "state/threads"
+        folder.mkdir(parents=True)
+        (folder / f"{THREAD}.json").write_text(json.dumps({
+            "threadId": THREAD, "status": "active", "project": "jev", "bot": "마크1",
+            "terminalHandle": "", "startedAt": "2026-10-02T06:13:14Z"}))
+        with (folder / f"{THREAD}.spawn.lock").open("a+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.assert_ok(self.command("sweep.sh"))
+        record = json.loads((folder / f"{THREAD}.json").read_text())
+        self.assertEqual(record["status"], "active")
+        self.assertEqual(json.loads((self.root / "state/pool.json").read_text())["마크1"]["threadId"], THREAD)
+        self.assertNotIn("시작되지 못했습니다", notes.read_text() if notes.exists() else "")
+        self.assert_ok(self.command("sweep.sh"))
+        record = json.loads((folder / f"{THREAD}.json").read_text())
+        self.assertEqual(record["status"], "failed")
+        self.assertIsNone(json.loads((self.root / "state/pool.json").read_text())["마크1"]["threadId"])
+        self.assertIn("기동 프로세스가 터미널을 만들기 전에 끝나", notes.read_text())
+
+    def test_sweep_fails_when_registered_terminal_is_gone(self):
+        notes = self.note_discord()
+        self.assert_ok(self.command("pool.sh", "lease", THREAD))
+        folder = self.root / "state/threads"
+        folder.mkdir(parents=True)
+        (folder / f"{THREAD}.json").write_text(json.dumps({
+            "threadId": THREAD, "status": "active", "project": "jev", "bot": "마크1",
+            "terminalHandle": "term_gone", "startedAt": "2026-10-02T06:13:14Z"}))
+        self.assert_ok(self.command("sweep.sh"))
+        self.assertEqual(json.loads((folder / f"{THREAD}.json").read_text())["status"], "failed")
+        self.assertIsNone(json.loads((self.root / "state/pool.json").read_text())["마크1"]["threadId"])
+        self.assertIn("작업자 터미널이 없어", notes.read_text())
+
+    def test_spawn_closes_listed_startup_terminal_when_create_omits_handle(self):
+        folder = Path(self.cfg["stateRoot"]) / "bots"
+        folder.mkdir(parents=True)
+        (folder / "마크1.env").write_text("DISCORD_APP_ID=777777777777777777\nDISCORD_BOT_TOKEN=local-test-only\n")
+        result = self.command("spawn-worker.sh", CHANNEL, THREAD, TEST_ORCA_MODE="new", TEST_STARTUP_HANDLE="none", TEST_LIST_STARTUP="term_shell")
+        self.assertNotEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertFalse(any(c[:4] == ["terminal", "close", "--terminal", "term_startup"] for c in calls))
+        close_i = next(i for i, c in enumerate(calls) if c[:4] == ["terminal", "close", "--terminal", "term_shell"])
+        create_i = next(i for i, c in enumerate(calls) if c[:2] == ["terminal", "create"])
+        self.assertLess(close_i, create_i)
+
+    def test_retry_queued_reports_spawn_failure_and_not_a_full_pool(self):
+        notes = self.note_discord()
+        (self.root / "bin/spawn-worker.sh").write_text('#!/bin/zsh\nprint -u2 -- "[spawn-worker.sh] ERROR: 플러그인 설치 실패"\nexit 1\n')
+        folder = self.root / "state/threads"
+        folder.mkdir(parents=True)
+        (folder / f"{THREAD}.json").write_text(json.dumps({
+            "threadId": THREAD, "channelId": CHANNEL, "status": "queued", "project": "jev", "bot": "마크1",
+            "taskTitle": "t", "currentRequest": "r", "requestMessageId": "", "engine": "claude", "newWorktree": True, "resume": False}))
+        failed = self.command("retry-queued.sh", THREAD)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertIn("플러그인 설치 실패", notes.read_text())
+        self.assertIn("대기열에서 작업을 시작하지 못했습니다", notes.read_text())
+        notes.write_text("")
+        (self.root / "bin/spawn-worker.sh").write_text("#!/bin/zsh\nexit 3\n")
+        queued = self.command("retry-queued.sh", THREAD)
+        self.assertEqual(queued.returncode, 3, queued.stderr)
+        self.assertEqual(notes.read_text(), "")
+
+    def test_detached_spawn_survives_caller_group_without_inheriting_its_lock(self):
+        lock, result, alive, log = (self.area / name for name in ("caller.lock", "child-result", "child-alive", "detach.log"))
+        child = self.area / "child.py"
+        child.write_text(
+            "import fcntl, os, sys, time\n"
+            "from pathlib import Path\n"
+            "fd = os.open(sys.argv[1], os.O_RDWR)\n"
+            "try:\n"
+            "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "except OSError:\n"
+            "    Path(sys.argv[2]).write_text('blocked')\n"
+            "else:\n"
+            "    fcntl.flock(fd, fcntl.LOCK_UN)\n"
+            "    Path(sys.argv[2]).write_text('acquired')\n"
+            "time.sleep(0.8)\n"
+            "Path(sys.argv[3]).write_text('alive')\n"
+        )
+        driver = self.area / "driver.zsh"
+        driver.write_text(
+            "#!/bin/zsh\nset -euo pipefail\n"
+            f"source {shlex.quote(str(self.root / 'bin/lib.sh'))}\n"
+            f"detach_spawn {shlex.quote(str(log))} {shlex.quote(sys.executable)} {shlex.quote(str(child))} {shlex.quote(str(lock))} {shlex.quote(str(result))} {shlex.quote(str(alive))}\n"
+        )
+        holder = self.area / "holder.py"
+        holder.write_text(
+            "import fcntl, os, signal, subprocess, sys, time\n"
+            "lock, driver, result = sys.argv[1:]\n"
+            "fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "subprocess.check_call(['zsh', driver])\n"
+            "for _ in range(40):\n"
+            "    if os.path.exists(result):\n"
+            "        break\n"
+            "    time.sleep(0.05)\n"
+            "os.killpg(os.getpid(), signal.SIGKILL)\n"
+        )
+        proc = subprocess.Popen([sys.executable, str(holder), str(lock), str(driver), str(result)], start_new_session=True, env=self.env)
+        try:
+            proc.wait(timeout=8)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=3)
+            self.fail("detached spawn driver did not stop")
+        for _ in range(20):
+            if alive.exists():
+                break
+            time.sleep(0.1)
+        self.assertEqual(result.read_text(), "blocked")
+        self.assertEqual(alive.read_text(), "alive")
 
     def test_claude_role_sets_subagent_model_tiers(self):
         role = (SOURCE / "roles" / "작업자.md").read_text()

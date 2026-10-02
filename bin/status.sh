@@ -13,7 +13,10 @@ for role in 상담역 접수원; do
   else line ⚠️ "$bot ($role) 세션은 있으나 Discord 플러그인 없음"; fi
 done
 n=0
-registry_list active | while IFS=$'\t' read -r tid st project bot handle started; do
+registry_list active | while IFS= read -r line; do
+  [[ -n "$line" ]] || continue
+  registry_split "$line"
+  tid="${fields[1]-}"; project="${fields[3]-}"; bot="${fields[4]-}"
   [[ -n "$tid" ]] || continue
   p="$(cat "$THREADS_DIR/$tid.pid" 2>/dev/null || true)"; title="$(registry_get "$tid" taskTitle)"
   if [[ "$(registry_engine "$tid")" == grok ]]; then

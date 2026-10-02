@@ -23,5 +23,24 @@ for field in engine bot; do
 done
 [[ "$(registry_get "$thread" newWorktree)" == True ]] && qargs+=(--new-worktree)
 [[ "$(registry_get "$thread" resume)" == True ]] && qargs+=(--resume)
+err="$(mktemp)"
+rc=0
+set +e
 "$ORCH_ROOT/bin/spawn-worker.sh" "$(registry_get "$thread" channelId)" "$thread" \
-  --title "@$tmp/title" --request-file "$tmp/request" --request-message-id "$(registry_get "$thread" requestMessageId)" "${qargs[@]}"
+  --title "@$tmp/title" --request-file "$tmp/request" --request-message-id "$(registry_get "$thread" requestMessageId)" "${qargs[@]}" 2>"$err"
+rc=$?
+set -e
+cat "$err" >&2
+if (( rc != 0 && rc != 3 )); then
+  reason="$(python3 -c '
+import sys
+lines=[l.strip() for l in open(sys.argv[1], errors="replace") if "ERROR:" in l]
+text=lines[-1] if lines else ("exit "+sys.argv[2])
+if "ERROR:" in text: text=text.split("ERROR:",1)[1].strip()
+print((text or ("exit "+sys.argv[2]))[:180])
+' "$err" "$rc")"
+  project="$(registry_get "$thread" project)"
+  notify_thread "$(registry_get "$thread" bot)" "$thread" "⚠️ 대기열에서 작업을 시작하지 못했습니다 (${project:-프로젝트 없음}, 스레드 $thread). ${reason:-exit $rc}"
+fi
+rm -f "$err"
+exit "$rc"
