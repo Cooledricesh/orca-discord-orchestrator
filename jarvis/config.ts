@@ -36,6 +36,7 @@ export interface Routes {
   stateRoot?: string
   enabled?: Partial<Record<'상담역' | '접수원' | '작업자' | '리뷰어' | '비전', boolean>>
   codexAuthFile?: string
+  opsLogChannelId?: string
 }
 
 export function roleEnabled(routes: Routes, role: keyof NonNullable<Routes['enabled']>): boolean {

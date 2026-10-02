@@ -79,12 +79,11 @@ Grok 엔진 작업자는 마크와 같은 스레드·worktree·풀 흐름을 쓰
 
 일반 셸의 `claude auth status`가 정상인데 봇에 `Login expired` 또는 `Not logged in`이 뜨면 **Orca 안의 터미널에서도** 같은 명령을 확인한다. macOS 실행 환경에 따라 인증 저장소 접근 결과가 다를 수 있다. Orca 쪽이 로그아웃 상태라면 그 터미널에서 `claude auth login --claudeai`로 인증한 뒤 해당 봇을 재시작한다. 토큰을 터미널 명령 인자에 복사하지 않는다.
 
-자비스의 정상 종료는 exit 0이므로 **jarvis-down만으로 자동 재시작된다고 가정하지 않는다.** 코드·라우트 변경에는 `jarvis-restart.sh`를 쓴다. 인증 갱신은 `codexAuthFile`의 원본 계정을 다시 로그인한 다음:
+자비스의 정상 종료는 exit 0이므로 **jarvis-down만으로 자동 재시작된다고 가정하지 않는다.** 코드·라우트 변경에는 `jarvis-restart.sh`를 쓴다. 인증 갱신은 `codexAuthFile`의 원본 계정을 다시 로그인하면 끝이다(자비스 `auth.json`은 원본으로의 링크). `reauth`는 강제 재링크만 한다 — 예: #운영-로그에 "원본보다 새것이라 링크하지 않고 유지 중" 경고가 뜬 뒤 원본 로그인 상태를 확인했을 때:
 
 ```sh
 # lib.sh의 경로 환경을 동일하게 적용하기 위해 zsh에서 실행한다.
 zsh -c 'source ./bin/lib.sh; bun "$ORCH_ROOT/jarvis/server.ts" reauth'
-bin/jarvis-restart.sh
 ```
 
 ## 소유자 DM

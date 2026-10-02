@@ -48,7 +48,7 @@ Claude 플러그인은 `access.json`의 소유자 allowlist와 채널 목록에 
 
 ## 검수와 독립 Codex
 
-자비스는 스레드 이력, 등록부의 worktree path/baseRef, git 상태를 Codex에 전달한다. 기본 검수 동시 실행 수는 1이다. 새 채널/신뢰 봇 설정은 데몬 재시작이 필요하다. Codex 홈은 `<STATE_DIR_ROOT>/jarvis/codex-home`이며 원본 인증 파일을 최초 한 번, 또는 명시적 reauth 때 복사한다. 개인 Codex 설정 전체를 복사하지 않고 읽기 전용·approval never 설정을 만든다.
+자비스는 스레드 이력, 등록부의 worktree path/baseRef, git 상태를 Codex에 전달한다. 기본 검수 동시 실행 수는 1이다. 새 채널/신뢰 봇 설정은 데몬 재시작이 필요하다. Codex 홈은 `<STATE_DIR_ROOT>/jarvis/codex-home`이며 `auth.json`은 원본 인증 파일로의 심볼릭 링크(매 검수 턴 전 재확인)라 양쪽이 한 토큰 계보를 공유한다. 개인 Codex 설정 전체를 복사하지 않고 읽기 전용·approval never 설정을 만든다.
 
 비전은 `fresh`, `resume`, `attach`, `stop`, `status`로 제어한다. 브리지가 app-server를 소유하므로 TUI만 닫아도 백엔드는 유지된다. 중복 억제 저널은 at-most-once 방식을 사용하며 무손실 전달을 보장하지 않는다. 기본 구성에서는 lounge와 비전 토큰이 필요 없다.
 

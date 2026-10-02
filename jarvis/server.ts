@@ -4,18 +4,20 @@
 //   bun server.ts --dry-run [--fixture f.json | --message "text"] [--cwd dir] [--chat id]
 //   bun server.ts cleanup <chatId>|--all      상태+codex 세션 파일 삭제
 //   bun server.ts gc [--days N]             lastTurnAt 이 N일(기본 review.gcDays=30) 넘은 스레드 정리
-//   bun server.ts reauth                    ~/.codex/auth.json 을 강제로 다시 복사
+//   bun server.ts reauth                    auth.json 을 설정된 원본 인증 파일로 강제 재링크
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
 import { basename } from 'path'
 import {
-  loadConfig, loadBotEnv, loadTrustedBots, roleEnabled, ensureDirs, PID_FILE, type Config,
+  loadConfig, loadBotEnv, loadTrustedBots, roleEnabled, ensureDirs, authSource, PID_FILE, type Config,
 } from './config.ts'
 import { gate, stripSelfMention, RateGuard, type GateInput } from './gate.ts'
 import {
   readState, writeState, newState, markProcessed, isProcessed, listStates, deleteState, log, applyModelRevision, type ThreadState,
 } from './state.ts'
 import { resolveTarget, gitBlock, formatHistory, buildPrompt, discordMessageText, type HistMsg, type Target } from './context.ts'
-import { prepareCodexHome, runTurn, recoverFinalMessage, deleteSessionFile, killAllChildren, inflightChildren } from './codex.ts'
+import {
+  prepareCodexHome, runTurn, recoverFinalMessage, deleteSessionFile, killAllChildren, inflightChildren, ensureAuthLink, isAuthError, authFailureNotice, type TurnResult,
+} from './codex.ts'
 import { Semaphore, PerKeyQueue } from './queue.ts'
 import { buildFinal, ProgressReporter, summarizeProgress, ConsolePoster, DiscordPoster, type Poster } from './post.ts'
 
@@ -44,6 +46,10 @@ class Jarvis {
   readonly rateGuard = new RateGuard(3, 60_000, 60_000)
   /** 신뢰 봇 appId → 봇 이름 (프라이데이 + 마크). 해피·자비스·외부 봇은 없다. */
   trustedBots = new Map<string, string>()
+  /** #운영-로그 게시 (모드가 주입). 실패해도 throw 하지 않는다. */
+  opsLog: (text: string) => Promise<void> = async () => {}
+  /** 'kept-newer' 경고는 프로세스당 한 번만 */
+  private keptNewerWarned = false
   constructor(readonly cfg: Config, readonly roleVersion: string, readonly selfAppId: string) {
     this.sem = new Semaphore(cfg.review.maxConcurrent)
   }
@@ -122,13 +128,23 @@ class Jarvis {
     if (process.env.JARVIS_SHOW_PROMPT) process.stdout.write(`\n=== [prompt] ===\n${prompt}\n`)
     const sections = prompt.split('\n').filter(l => l.startsWith('## ')).join(', ')
     log(`[${req.chatId}] turn ${turn} start (${isFirst ? 'new' : 'resume ' + st.codexThreadId}) cwd=${target.cwd} prompt=${prompt.length}c hist=${capped.length} sections=[${sections}]`)
-    let res
+    let res: TurnResult
     try {
-      res = await runTurn({
-        cwd: target.cwd, prompt, resumeId: st.codexThreadId, signal: ac.signal,
-        onProgress: p => { if (p.kind !== 'message') progress.update(summarizeProgress(p.kind, p.text)) },
-        onThreadStarted: id => { st!.codexThreadId = id; writeState(st!) },
-      })
+      // 매 턴 전 auth.json 링크 재확인. 원본이 없으면 codex 를 돌리지 않고 실패 결과로 같은 경로를 탄다.
+      let authErr: string | null = null
+      try {
+        if (ensureAuthLink(cfg) === 'kept-newer' && !this.keptNewerWarned) {
+          this.keptNewerWarned = true
+          void this.opsLog('⚠️ 자비스 Codex 인증 파일이 원본보다 새것이라 링크하지 않고 유지 중 — 원본 계정 로그인 상태를 확인한 뒤 `bun jarvis/server.ts reauth`').catch(() => {})
+        }
+      } catch (e) { authErr = e instanceof Error ? e.message : String(e) }
+      res = authErr !== null
+        ? { threadId: st.codexThreadId, finalText: '', usage: null, error: authErr, aborted: false }
+        : await runTurn({
+          cwd: target.cwd, prompt, resumeId: st.codexThreadId, signal: ac.signal,
+          onProgress: p => { if (p.kind !== 'message') progress.update(summarizeProgress(p.kind, p.text)) },
+          onThreadStarted: id => { st!.codexThreadId = id; writeState(st!) },
+        })
     } finally { clearTimeout(timer); progress.close() }
     if (shuttingDown) { log(`[${req.chatId}] turn ${turn} interrupted by shutdown — inflight kept for recovery`); return }
     const secs = Math.round((Date.now() - t0) / 1000)
@@ -143,7 +159,10 @@ class Jarvis {
     let ids: string[]
     if (res.error) {
       // 실패·중단은 중간 출력이 있어도 정상 결과로 게시하지 않는다. 있으면 "미완료" 로 표시해 붙인다.
-      const why = res.aborted ? `⏱ ${cfg.review.timeoutMin}분 안에 끝나지 않아 중단했습니다. 범위를 좁혀 다시 멘션해 주세요.` : `❌ 자비스 실행 실패: ${res.error}`
+      const authFail = !res.aborted && isAuthError(res.error)
+      const why = res.aborted ? `⏱ ${cfg.review.timeoutMin}분 안에 끝나지 않아 중단했습니다. 범위를 좁혀 다시 멘션해 주세요.`
+        : authFail ? authFailureNotice(res.error, authSource(cfg.routes)) : `❌ 자비스 실행 실패: ${res.error}`
+      if (authFail) void this.opsLog(`⚠️ 자비스 검수 실패 — Codex 로그인 문제 (<#${req.chatId}>): ${res.error.replace(/\s+/g, ' ').trim().slice(0, 200)} · 조치: 원본 Codex 계정 재로그인 후 다시 멘션`).catch(() => {})
       log(`[${req.chatId}] turn ${turn} failed after ${secs}s: ${res.error}${res.finalText ? ` (partial ${res.finalText.length}c)` : ''}`)
       const payload = res.finalText
         ? buildFinal(`${why}\n\n⚠️ 아래는 중단 전까지의 미완료 출력입니다.\n\n${res.finalText}`, { project: target.project, chatId: req.chatId, turn })
@@ -223,6 +242,12 @@ async function runDiscord(cfg: Config, roleVersion: string): Promise<void> {
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.DirectMessages, GatewayIntentBits.MessageContent],
     partials: [Partials.Channel],
   })
+  jarvis.opsLog = async content => {
+    try {
+      const ch: any = await client.channels.fetch(cfg.routes.opsLogChannelId || cfg.routes.generalChannelId)
+      await ch.send({ content, allowedMentions: { parse: [] } })
+    } catch (e) { log(`ops log post failed: ${e}`) }
+  }
 
   const toHist = (m: any): HistMsg => ({
     id: m.id,
@@ -355,6 +380,7 @@ async function runDry(cfg: Config, roleVersion: string, args: string[]): Promise
   const selfAppId = fixtures[0]?.selfAppId ?? 'JARVIS-APP'
   const jarvis = new Jarvis(cfg, roleVersion, selfAppId)
   jarvis.trustedBots = loadTrustedBots(cfg.routes)
+  jarvis.opsLog = async text => { process.stdout.write(`\n=== [post:ops-log] ===\n${text}\n`) }
   process.stdout.write(`[dry] trusted bots: ${jarvis.trustedBots.size} (${[...jarvis.trustedBots.values()].join(', ')})\n`)
   const poster = new ConsolePoster()
   const jobs = fixtures.map((f, i) => {
@@ -410,7 +436,7 @@ async function main() {
     process.stdout.write(`gc: ${removed.length} thread(s) older than ${days}d removed${removed.length ? ' — ' + removed.join(', ') : ''}\n`)
     return
   }
-  if (args[0] === 'reauth') { prepareCodexHome(cfg, { reauth: true }); process.stdout.write('auth.json re-copied from configured source\n'); return }
+  if (args[0] === 'reauth') { prepareCodexHome(cfg, { reauth: true }); process.stdout.write('auth.json re-linked to configured source\n'); return }
   const roleVersion = prepareCodexHome(cfg)
   installSignalHandlers()
   if (args.includes('--dry-run')) { await runDry(cfg, roleVersion, args); return }

@@ -75,7 +75,7 @@ bin/status.sh
 | `STATE_DIR_ROOT` | `<ORCH_ROOT>/state`: 등록부·풀·로그·검수 세션 |
 | `routes.json stateRoot` | `~/.claude/channels`: Discord 세션별 설정·토큰 복사본 |
 | `BOTS_DIR` | `<stateRoot>/bots`: 원본 봇 env 파일 |
-| `codexAuthFile` | 리뷰어에 복사할 인증 파일 경로. `init`이 현재 `CODEX_HOME/auth.json` 경로를 기록 |
+| `codexAuthFile` | 리뷰어가 링크로 직접 쓰는 인증 파일 경로. `init`이 현재 `CODEX_HOME/auth.json` 경로를 기록 |
 | `ORCH_CODEX_AUTH_FILE` | `codexAuthFile`보다 우선하는 환경변수 |
 | `models.리뷰어` | 빈 model/effort면 격리 Codex CLI의 기본값. 개인 `config.toml` 전체를 복사하지 않음 |
 | `writeDir` | worktree 내부 상대 경로. 역할 지침상의 수정 범위 |
