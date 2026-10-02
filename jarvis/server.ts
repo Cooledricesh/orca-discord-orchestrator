@@ -24,7 +24,7 @@ import { buildFinal, ProgressReporter, summarizeProgress, ConsolePoster, Discord
 // ---------------------------------------------------------------------------
 // 공통 파이프라인
 // ---------------------------------------------------------------------------
-interface Request {
+export interface Request {
   chatId: string
   isDirectMessage?: boolean
   parentChannelId: string
@@ -40,7 +40,7 @@ interface Request {
 
 let shuttingDown = false
 
-class Jarvis {
+export class Jarvis {
   readonly sem: Semaphore
   readonly q = new PerKeyQueue()
   readonly rateGuard = new RateGuard(3, 60_000, 60_000)
@@ -446,4 +446,5 @@ async function main() {
   await runDiscord(cfg, roleVersion)
 }
 
-main().catch(e => { log(`fatal: ${e?.stack ?? e}`); process.exit(1) })
+// 테스트가 import 할 때는 데몬을 띄우지 않는다
+if (import.meta.main) main().catch(e => { log(`fatal: ${e?.stack ?? e}`); process.exit(1) })
