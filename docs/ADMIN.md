@@ -16,8 +16,8 @@
 | `bin/finish-worker.sh <스레드> succeeded 또는 failed 또는 stopped` | 작업 정리·봇 반환·대기열 재시도. 새 worktree 작업은 그 worktree·하위 worktree 터미널을 모두 닫는다 |
 | `bin/stop-worker.sh <스레드>` | stopped로 정리 |
 | `bin/retry-queued.sh <스레드>` | 대기 작업 재시도 |
-| `bin/sweep.sh` | 종료된 터미널·30분 이상 유휴 작업 정리·끝난 스레드 worktree 에 남은 터미널 닫기·고아 lease 회수 |
-| `bin/worktrees.py report [--json]` | 작업 worktree 목록(상태·용량·미커밋·운영 HEAD 미병합·터미널 수). 삭제하지 않는다 |
+| `bin/sweep.sh` | 종료된 터미널·30분 이상 유휴 작업 정리·끝난 스레드 worktree 에 남은 터미널 닫기·worktree 자동 정리(1시간마다)와 주간 보고·고아 lease 회수 |
+| `bin/worktrees.py report [--json]` / `prune --dry-run` | 작업 worktree 목록(상태·용량·미커밋·운영 HEAD 미병합·보존 파일·경과일·터미널 수) / 자동 정리 대상 미리보기 |
 | `bin/pool.sh status` / `bin/status.sh` | 풀(봇·엔진·스레드) / 전체 상태 확인 |
 | `bin/jarvis-up.sh [--fg]` | 자비스 기동. --fg는 launchd용 |
 | `bin/jarvis-down.sh` / `bin/jarvis-restart.sh` | 자비스 종료 / 설정을 다시 읽고 재시작 |

@@ -37,6 +37,8 @@ if a[:2]==['worktree','create']:
         ref=a[a.index('--base-branch')+1]
         subprocess.run(['git','-C',source,'worktree','add','--detach',target,ref],check=True,capture_output=True)
     print(json.dumps({'result':{'worktree':{'path':target},'startupTerminal':{'handle':'term_startup'}}}));sys.exit(0)
+if a[:2]==['worktree','rm']:
+    subprocess.run(['git','worktree','remove','--force',a[a.index('--worktree')+1].removeprefix('path:')],cwd=os.environ['TEST_AREA']+'/project space',check=True,capture_output=True);sys.exit(0)
 if a[:2]==['worktree','list'] and 'TEST_WORKTREES' in os.environ:
     print(json.dumps({'result':{'worktrees':json.loads(os.environ['TEST_WORKTREES'])}}));sys.exit(0)
 if a[:2]==['terminal','list'] and 'TEST_TERMINALS' in os.environ:
@@ -438,6 +440,35 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual((row["status"], row["dirty"], row["unmerged"], row["terminals"]), ("done", True, 1, 0))
         self.assertTrue(wt.exists())
         self.assertFalse(any(c[:2] == ["terminal", "close"] or c[:2] == ["worktree", "rm"] for c in self.calls()))
+
+    def test_prune_removes_only_clean_finished_worktrees_after_seven_days(self):
+        (self.project / ".gitignore").write_text("node_modules/\noutput/\n")
+        subprocess.run(["git", "-C", str(self.project), "add", ".gitignore"], check=True)
+        subprocess.run(["git", "-C", str(self.project), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "ignore"], check=True)
+        folder = self.root / "state/threads"
+        folder.mkdir(parents=True)
+        old, recent = "2026-01-01T00:00:00Z", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        cases = {"clean": ("done", old, None), "recent": ("done", recent, None), "kept": ("stopped", old, "output/a.png"),
+                 "dirty": ("done", old, "draft.txt"), "active": ("active", old, None), "cache": ("failed", old, "node_modules/x.js")}
+        paths = {}
+        for i, (name, (status, ended, extra)) in enumerate(cases.items()):
+            tid = str(900000000000000000 + i)
+            wt = paths[name] = self.area / f"task-{tid}-{i:08x}"
+            subprocess.run(["git", "-C", str(self.project), "worktree", "add", "-q", "--detach", str(wt)], check=True)
+            if extra:
+                (wt / extra).parent.mkdir(exist_ok=True)
+                (wt / extra).write_text("x")
+            (folder / f"{tid}.json").write_text(json.dumps({"threadId": tid, "status": status, "endedAt": ended, "worktreeMode": "new", "path": str(wt)}))
+        env = dict(TEST_WORKTREES=json.dumps([{"id": n, "path": str(p)} for n, p in paths.items()]), TEST_TERMINALS="[]")
+        result = self.command("worktrees.py", "periodic", **env)
+        self.assert_ok(result)
+        messages = [m for m in result.stdout.split("\0") if m]
+        self.assertEqual({n for n, p in paths.items() if not p.exists()}, {"clean", "cache"})
+        self.assertIn("worktree 자동 정리 2개", messages[0])
+        self.assertIn("주간 worktree 보고", messages[1])
+        self.assertIn(paths["kept"].name, messages[1])
+        # 1시간·7일 주기: 바로 다시 불러도 아무것도 하지 않는다
+        self.assertEqual(self.command("worktrees.py", "periodic", **env).stdout, "")
 
     def test_init_does_not_overwrite_existing_settings(self):
         original = (self.root / "routes.json").read_bytes()

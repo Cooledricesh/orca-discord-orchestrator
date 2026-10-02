@@ -28,7 +28,7 @@ Claude 플러그인은 `access.json`의 소유자 allowlist와 채널 목록에 
 
 모델/effort는 사용자 명시 > 봇 항목 > Jev 난이도 분류(`bin/classify-request.py`, `routes.json` `jevRouting` 매핑, 확신도 0.85 미만·키 없음·실패·3초 초과는 기본값) > 엔진 기본값 순으로 정한다. 판정은 등록부 `routeLevel`·`routeConfidence`·`routeSource`(user|jev|default)에 남고 대기열 재시도는 다시 분류하지 않는다.
 
-대기열은 `queuedAt` 우선으로 정렬한다. sweep은 스폰 잠금이 잡힌 lease를 고아로 회수하지 않는다. 결과 worktree·브랜치는 자동 병합·삭제하지 않는다. 검토 후 사용자가 병합 및 정리 정책을 선택한다.
+대기열은 `queuedAt` 우선으로 정렬한다. sweep은 스폰 잠금이 잡힌 lease를 고아로 회수하지 않는다. 결과 worktree·브랜치는 자동 병합하지 않는다. 작업 종료 시 그 worktree·하위 worktree의 터미널을 모두 닫는다. 끝난 스레드의 worktree는 미커밋·운영 HEAD 미병합 커밋·보존 대상 ignored 파일이 없고 종료 후 7일이 지났을 때만 sweep이 `orca worktree rm`으로 삭제한다. 나머지는 주간 보고로 #운영-로그에 올리고 사용자가 정리한다.
 
 같은 스레드의 `--resume`은 저장된 Claude sessionId와 같은 격리 worktree를 사용한다. 기본 재요청은 새 worktree다. 과거 공유 폴더 세션의 resume은 거부한다. 다른 세션으로 인계할 때는 사용자가 요청한 인계 문서 경로만 전달한다.
 
