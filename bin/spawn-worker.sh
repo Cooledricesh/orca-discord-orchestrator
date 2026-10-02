@@ -112,6 +112,8 @@ spawn_cleanup() {
   (( leased && ! spawned )) || return 0
   [[ -z "$handle" ]] || orca terminal close --terminal "$handle" --tab --json >/dev/null 2>&1 || true
   registry_update "$thread" "threadId=$thread" "channelId=$channel" "project=$project" status=failed "endedAt=$(now)" || true
+  # 새 worktree 에 남은 터미널(Orca 첫 터미널 포함)도 닫는다. 공유 폴더는 위의 handle 만.
+  python3 "$ORCH_ROOT/bin/worktrees.py" close-thread "$thread" || true
   "$ORCH_ROOT/bin/pool.sh" release "$thread" >/dev/null 2>&1 || true
   [[ -z "$prompt_file" ]] || rm -f "$prompt_file"
   if (( state_created )); then rm -f "$sd/.env" "$sd/access.json"; fi
@@ -154,6 +156,9 @@ if (( new_wt )); then
     work_path="<new-worktree:$wt_name>"
   else
     out="$(orca worktree create --repo "path:$proj_path" --parent-worktree "path:$proj_path" --base-branch "$source_ref" --name "$wt_name" --json 2>&1)" || die "worktree 생성 실패 — 공유 폴더로 진행하지 않습니다. Orca 저장소 등록을 확인하세요."
+    # Orca 가 worktree 와 함께 만든 첫 터미널(빈 셸)은 쓰지 않는다. 작업자 터미널은 아래에서 따로 만든다.
+    st_handle="$(json_get "$out" result.startupTerminal.handle 2>/dev/null || true)"
+    [[ -z "$st_handle" ]] || orca terminal close --terminal "$st_handle" --tab --json >/dev/null 2>&1 || warn "첫 터미널 닫기 실패: $st_handle"
     wp="$(json_get "$out" result.worktree.path 2>/dev/null || json_get "$out" result.path 2>/dev/null || true)"
     [[ -n "$wp" && -d "$wp" ]] || die "Orca가 유효한 worktree 경로를 반환하지 않았습니다"
     python3 "$ORCH_ROOT/bin/check-worktree.py" "$proj_path" "$wp" || die "worktree 격리 확인 실패 — 작업자를 실행하지 않습니다"

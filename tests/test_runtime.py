@@ -33,10 +33,14 @@ if a[:2]==['worktree','create']:
     if mode=='fail':sys.exit(1)
     if mode=='shared':target=source
     else:
-        target=str(pathlib.Path(os.environ['TEST_AREA'])/'worker checkout')
+        target=str(pathlib.Path(os.environ['TEST_AREA'])/a[a.index('--name')+1])
         ref=a[a.index('--base-branch')+1]
         subprocess.run(['git','-C',source,'worktree','add','--detach',target,ref],check=True,capture_output=True)
-    print(json.dumps({'result':{'worktree':{'path':target}}}));sys.exit(0)
+    print(json.dumps({'result':{'worktree':{'path':target},'startupTerminal':{'handle':'term_startup'}}}));sys.exit(0)
+if a[:2]==['worktree','list'] and 'TEST_WORKTREES' in os.environ:
+    print(json.dumps({'result':{'worktrees':json.loads(os.environ['TEST_WORKTREES'])}}));sys.exit(0)
+if a[:2]==['terminal','list'] and 'TEST_TERMINALS' in os.environ:
+    print(json.dumps({'result':{'terminals':json.loads(os.environ['TEST_TERMINALS'])}}));sys.exit(0)
 if a[:2]==['terminal','show']:
     print(json.dumps({'result':{'terminal':json.loads(os.environ['TEST_TERMINAL_JSON'])}}));sys.exit(0)
 if a[:2]==['terminal','create']:sys.exit(1)
@@ -329,10 +333,14 @@ class RuntimeTests(unittest.TestCase):
         (folder / "마크1.env").write_text("DISCORD_APP_ID=777777777777777777\nDISCORD_BOT_TOKEN=local-test-only\n")
         r = self.command("spawn-worker.sh", CHANNEL, THREAD, TEST_ORCA_MODE="new")
         self.assertNotEqual(r.returncode, 0)
-        self.assertTrue((self.area / "worker checkout/.git").is_file())
         record = json.loads((self.root / f"state/threads/{THREAD}.json").read_text())
+        checkout = Path(record["path"])
+        self.assertRegex(checkout.name, rf"^task-{THREAD}-[0-9a-f]{{8}}$")
+        self.assertTrue((checkout / ".git").is_file())
         self.assertEqual(record["status"], "failed")
-        self.assertEqual(record["path"], str(self.area / "worker checkout"))
+        # Orca 첫 터미널은 생성 직후, 실패 정리 때는 worktree 의 남은 터미널 전체를 닫는다
+        self.assertIn(["terminal", "close", "--terminal", "term_startup", "--tab", "--json"], self.calls())
+        self.assertIn(["terminal", "close", "--worktree", f"path:{checkout}", "--all", "--json"], self.calls())
         self.assertIsNone(json.loads((self.root / "state/pool.json").read_text())["마크1"]["threadId"])
         self.assertTrue(any(c[:2] == ["terminal", "create"] for c in self.calls()))
         self.assertFalse((Path(self.cfg["stateRoot"]) / "workers" / THREAD / ".env").exists())
@@ -372,6 +380,64 @@ class RuntimeTests(unittest.TestCase):
         at_close = json.loads(snapshot.read_text())
         self.assertEqual(at_close["registry"]["status"], "done")
         self.assertIsNone(at_close["pool"]["마크1"]["threadId"])
+
+    def finished_worktree_fixture(self, status="done", mode="new"):
+        """끝난 스레드 worktree(+하위), 진행 중 스레드 worktree, 프로젝트 원본, 다른 저장소 터미널."""
+        own, child, other = (self.area / name for name in (f"task-{THREAD}-aaaaaaaa", "codex-child", "task-999999999999999999-bbbbbbbb"))
+        for p in (own, child, other): p.mkdir()
+        folder = self.root / "state/threads"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{THREAD}.json").write_text(json.dumps({"threadId": THREAD, "status": status, "bot": "마크1", "terminalHandle": "term_worker", "worktreeMode": mode, "path": str(own if mode == "new" else self.project), "projectPath": str(self.project)}))
+        (folder / "999999999999999999.json").write_text(json.dumps({"threadId": "999999999999999999", "status": "active", "worktreeMode": "new", "path": str(other)}))
+        worktrees = [{"id": "r::own", "path": str(own), "childWorktreeIds": ["r::child"]}, {"id": "r::child", "path": str(child)},
+                     {"id": "r::other", "path": str(other)}, {"id": "r::root", "path": str(self.project)}]
+        terminals = [{"handle": f"term_{i}", "worktreePath": str(p)} for i, p in enumerate((own, own, child, other, self.project))] + [{"handle": "term_float", "worktreePath": ""}]
+        return own, child, dict(TEST_WORKTREES=json.dumps(worktrees), TEST_TERMINALS=json.dumps(terminals))
+
+    def closed_worktrees(self):
+        return [c[3] for c in self.calls() if c[:3] == ["terminal", "close", "--worktree"]]
+
+    def test_finish_closes_every_terminal_of_its_worktree_and_children_last_own(self):
+        lib = self.root / "bin/lib.sh"
+        lib.write_text(lib.read_text() + '\ndiscord_api() { print -- "{}"; }\ndiscord_archive_thread() { :; }\nops_log() { :; }\n')
+        own, child, env = self.finished_worktree_fixture(status="active")
+        self.assert_ok(self.command("finish-worker.sh", THREAD, "succeeded", **env))
+        self.assertEqual(self.closed_worktrees(), [f"path:{child}", f"path:{own}"])
+        self.assertIn(["terminal", "close", "--terminal", "term_worker", "--tab", "--json"], self.calls())
+
+    def test_finish_in_shared_folder_closes_only_registered_terminal(self):
+        lib = self.root / "bin/lib.sh"
+        lib.write_text(lib.read_text() + '\ndiscord_api() { print -- "{}"; }\ndiscord_archive_thread() { :; }\nops_log() { :; }\n')
+        _, _, env = self.finished_worktree_fixture(status="active", mode="own")
+        self.assert_ok(self.command("finish-worker.sh", THREAD, "succeeded", **env))
+        self.assertEqual(self.closed_worktrees(), [])
+        self.assertIn(["terminal", "close", "--terminal", "term_worker", "--tab", "--json"], self.calls())
+
+    def test_sweep_closes_leftover_terminals_only_for_finished_threads(self):
+        own, child, env = self.finished_worktree_fixture(status="stopped")
+        folder = self.root / "state/threads"
+        with (folder / f"{THREAD}.spawn.lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.assert_ok(self.command("sweep.sh", **env))
+        self.assertEqual(self.closed_worktrees(), [])
+        self.assert_ok(self.command("sweep.sh", **env))
+        self.assertEqual(self.closed_worktrees(), [f"path:{child}", f"path:{own}"])
+        self.assertFalse(any(c[:2] == ["terminal", "close"] and "--terminal" in c for c in self.calls()))
+
+    def test_worktree_report_shows_uncommitted_and_unmerged_without_deleting(self):
+        wt = self.area / f"task-{THREAD}-cccccccc"
+        subprocess.run(["git", "-C", str(self.project), "worktree", "add", "-q", "--detach", str(wt)], check=True)
+        subprocess.run(["git", "-C", str(wt), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-qm", "work"], check=True)
+        (wt / "draft.txt").write_text("x")
+        folder = self.root / "state/threads"
+        folder.mkdir(parents=True)
+        (folder / f"{THREAD}.json").write_text(json.dumps({"threadId": THREAD, "status": "done", "worktreeMode": "new", "path": str(wt)}))
+        result = self.command("worktrees.py", "report", "--json", TEST_WORKTREES=json.dumps([{"id": "r::wt", "path": str(wt)}]), TEST_TERMINALS="[]")
+        self.assert_ok(result)
+        [row] = json.loads(result.stdout)
+        self.assertEqual((row["status"], row["dirty"], row["unmerged"], row["terminals"]), ("done", True, 1, 0))
+        self.assertTrue(wt.exists())
+        self.assertFalse(any(c[:2] == ["terminal", "close"] or c[:2] == ["worktree", "rm"] for c in self.calls()))
 
     def test_init_does_not_overwrite_existing_settings(self):
         original = (self.root / "routes.json").read_bytes()

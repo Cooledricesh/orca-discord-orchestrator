@@ -13,10 +13,11 @@
 | `bin/leads-check.sh [--restart <역할>]` | 활성 상시 역할 복구, 플러그인 누락 감시. restart는 새 컨텍스트 |
 | `bin/open-thread.sh <봇> <채널> <메시지ID 또는 new> <제목 또는 @file> [본문 또는 @file]` | Discord 스레드 생성 |
 | `bin/spawn-worker.sh <채널> <스레드> [--title t 또는 @file] [--request-file f] [--engine claude 또는 grok] [--bot <봇>] [--resume] [--dry-run]` | 작업 전용 worktree 스폰. 그 엔진 풀이 차면 exit 3 (queued) |
-| `bin/finish-worker.sh <스레드> succeeded 또는 failed 또는 stopped` | 작업 정리·봇 반환·대기열 재시도 |
+| `bin/finish-worker.sh <스레드> succeeded 또는 failed 또는 stopped` | 작업 정리·봇 반환·대기열 재시도. 새 worktree 작업은 그 worktree·하위 worktree 터미널을 모두 닫는다 |
 | `bin/stop-worker.sh <스레드>` | stopped로 정리 |
 | `bin/retry-queued.sh <스레드>` | 대기 작업 재시도 |
-| `bin/sweep.sh` | 종료된 터미널·30분 이상 유휴 작업 정리·고아 lease 회수 |
+| `bin/sweep.sh` | 종료된 터미널·30분 이상 유휴 작업 정리·끝난 스레드 worktree 에 남은 터미널 닫기·고아 lease 회수 |
+| `bin/worktrees.py report [--json]` | 작업 worktree 목록(상태·용량·미커밋·운영 HEAD 미병합·터미널 수). 삭제하지 않는다 |
 | `bin/pool.sh status` / `bin/status.sh` | 풀(봇·엔진·스레드) / 전체 상태 확인 |
 | `bin/jarvis-up.sh [--fg]` | 자비스 기동. --fg는 launchd용 |
 | `bin/jarvis-down.sh` / `bin/jarvis-restart.sh` | 자비스 종료 / 설정을 다시 읽고 재시작 |

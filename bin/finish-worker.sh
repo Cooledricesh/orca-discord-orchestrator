@@ -1,6 +1,6 @@
 #!/bin/zsh
 # 작업자(마크·그록) 종료. finish-worker.sh <threadId> <succeeded|failed|stopped>
-# 스레드 이름·보관 → 등록부 → 풀 반납 → STATE_DIR 삭제 → 대기열 스폰 → 터미널 close / PID kill
+# 스레드 이름·보관 → 등록부 → 풀 반납 → STATE_DIR 삭제 → 대기열 스폰 → 터미널 close (new worktree 는 그 worktree 전체) / PID kill
 # (작업자가 자기 finish 를 부르면 터미널 close 에서 자기 프로세스가 죽는다. 그 전에 Discord 답장을 끝내 둔다.)
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
@@ -60,6 +60,9 @@ fi
 print -- "finished thread=$thread status=$st bot=${bot:-?}"
 
 # 프로세스 정리 (재부팅 후 재사용된 PID 는 건드리지 않는다).
+# 새 worktree 작업은 그 worktree·하위 worktree 의 터미널(Orca 첫 터미널, 작업자가 띄운 Codex 등)을 모두 닫는다.
+# 등록 handle 이 든 작업자 자신의 worktree 는 맨 마지막에 닫힌다. 공유 폴더는 등록 handle 만 닫는다.
+[[ "$(registry_get "$thread" worktreeMode)" != new ]] || python3 "$ORCH_ROOT/bin/worktrees.py" close-thread "$thread" || true
 [[ -z "$handle" ]] || orca terminal close --terminal "$handle" --tab --json >/dev/null 2>&1 || true
 if pid_is "$pid" "$proc"; then
   sleep 3; kill -TERM "$pid" 2>/dev/null || true; sleep 3; pid_is "$pid" "$proc" && kill -KILL "$pid" 2>/dev/null || true

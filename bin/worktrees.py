@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""작업 worktree 의 터미널 정리와 누적 보고. worktree 자체는 지우지 않는다.
+
+  worktrees.py close-thread <threadId>   등록부가 끝난(done/failed/stopped) new-worktree 스레드의
+                                         task-<threadId>-* worktree 와 그 하위 worktree 터미널을 모두 닫는다
+  worktrees.py sweep                     끝난 스레드 전체에 같은 정리 (sweep.sh 안전망, 스폰 잠금 중이면 건너뜀)
+  worktrees.py report [--json]           task-* worktree 목록: 상태·용량·미커밋·운영 HEAD 미병합 커밋·터미널 수
+
+닫는 기준은 등록부 상태와 worktree 경로다. Orca 의 orphaned 표시는 쓰지 않는다 (CLI 로 만든 살아 있는 터미널도 orphaned).
+보호: 프로젝트 원본·ORCH_ROOT·끝나지 않은 스레드의 경로는 어떤 경로로도 닫지 않는다.
+"""
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+from config import runtime_paths
+
+ORCA = os.environ.get("ORCA_BIN") or os.environ.get("ORCA_CLI_COMMAND") or "orca"
+PATHS = runtime_paths()
+THREADS = Path(PATHS["STATE_DIR_ROOT"]) / "threads"
+FINISHED = {"done", "failed", "stopped"}
+TASK = re.compile(r"^task-(\d+)-[0-9a-f]{8}$")
+# 스폰의 플러그인 설치(ensure_plugin)·Finder 가 만드는 변경은 미커밋 판정에서 뺀다
+NOISE = {".claude/settings.json", ".claude/", ".DS_Store"}
+
+
+def log(msg):
+    print(f"[worktrees.py] {msg}", file=sys.stderr, flush=True)
+
+
+def norm(p):
+    return os.path.realpath(p) if p else ""
+
+
+def orca_json(*args):
+    try:
+        r = subprocess.run([ORCA, *args, "--json"], capture_output=True, text=True, timeout=60)
+        return json.loads(r.stdout).get("result") if r.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+        return None
+
+
+def items(result, key):
+    if isinstance(result, dict):
+        result = result.get(key)
+    return [x for x in result if isinstance(x, dict)] if isinstance(result, list) else None
+
+
+def registry():
+    rows = {}
+    for f in THREADS.glob("*.json"):
+        try:
+            r = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(r, dict) and r.get("threadId"):
+            rows[str(r["threadId"])] = r
+    return rows
+
+
+def protected(rows):
+    keep = {norm(PATHS["ORCH_ROOT"])}
+    try:
+        routes = json.loads(Path(PATHS["ROUTES_FILE"]).read_text()).get("routes", {})
+    except (OSError, ValueError, AttributeError):
+        routes = {}
+    keep |= {norm(v.get("path")) for v in routes.values() if isinstance(v, dict)}
+    keep |= {norm(r.get("projectPath")) for r in rows.values()}
+    keep |= {norm(r.get("path")) for r in rows.values() if r.get("status") not in FINISHED}
+    keep.discard("")
+    return keep
+
+
+def thread_paths(tid, rec, worktrees):
+    """그 스레드의 task-<tid>-* worktree 와 Orca 하위 worktree. 하위부터, 등록부 현재 경로는 맨 끝 (작업자 자신이 호출하면 거기서 죽는다)."""
+    by_id = {w.get("id"): w for w in worktrees}
+    stack = [w for w in worktrees if (m := TASK.match(Path(w.get("path") or "").name)) and m.group(1) == tid]
+    found, seen = [], set()
+    while stack:
+        w = stack.pop()
+        p = norm(w.get("path"))
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        found.append(p)
+        stack += [by_id[c] for c in w.get("childWorktreeIds") or [] if c in by_id]
+    current = norm(rec.get("path")) if (m := TASK.match(Path(rec.get("path") or "").name)) and m.group(1) == tid else ""
+    ordered = [p for p in reversed(found) if p != current]
+    return ordered + ([current] if current else [])
+
+
+def close_paths(paths, terminals):
+    for p in paths:
+        n = None if terminals is None else sum(1 for t in terminals if norm(t.get("worktreePath")) == p)
+        if n == 0:
+            continue
+        log(f"터미널 닫음: {p} ({'?' if n is None else n}개)")
+        subprocess.run([ORCA, "terminal", "close", "--worktree", f"path:{p}", "--all", "--json"], capture_output=True, timeout=60)
+
+
+def eligible(rec):
+    return rec.get("status") in FINISHED and rec.get("worktreeMode") == "new"
+
+
+def close_thread(tid):
+    rows = registry()
+    rec = rows.get(tid)
+    if not rec or not eligible(rec):
+        return 0  # 공유 폴더·진행 중 스레드는 finish-worker 가 등록 handle 만 닫는다
+    worktrees = items(orca_json("worktree", "list"), "worktrees") or []
+    keep = protected(rows)
+    paths = [p for p in thread_paths(tid, rec, worktrees) if p not in keep]
+    close_paths(paths, items(orca_json("terminal", "list"), "terminals"))
+    return 0
+
+
+def sweep():
+    worktrees = items(orca_json("worktree", "list"), "worktrees")
+    terminals = items(orca_json("terminal", "list"), "terminals")
+    if worktrees is None or terminals is None:
+        log("Orca 목록 조회 실패 — 건너뜀")
+        return 0
+    busy = {norm(t.get("worktreePath")) for t in terminals}
+    THREADS.mkdir(parents=True, exist_ok=True)
+    rows = registry()
+    tids = {m.group(1) for w in worktrees if (m := TASK.match(Path(w.get("path") or "").name))}
+    for tid in sorted(tids):
+        if not eligible(rows.get(tid) or {}):
+            continue
+        with (THREADS / f"{tid}.spawn.lock").open("a+") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue  # 스폰·재개·종료가 진행 중
+            rows = registry()
+            rec = rows.get(tid) or {}
+            if not eligible(rec):
+                continue
+            keep = protected(rows)
+            paths = [p for p in thread_paths(tid, rec, worktrees) if p not in keep and p in busy]
+            close_paths(paths, terminals)
+    return 0
+
+
+def git(path, *args):
+    r = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=60)
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def inspect(path):
+    size = subprocess.run(["du", "-sk", path], capture_output=True, text=True).stdout.split("\t")[0]
+    status = git(path, "status", "--porcelain", "--untracked-files=normal")
+    changed = None if status is None else [l[3:] for l in status.splitlines() if l[3:] not in NOISE]
+    common = git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    main = str(Path(common).parent) if common else None
+    main_head = git(main, "rev-parse", "HEAD") if main else None
+    ahead = git(path, "rev-list", "--count", "HEAD", "--not", main_head) if main_head else None
+    return dict(sizeKB=int(size) if size.isdigit() else None, dirty=None if changed is None else bool(changed), changed=changed,
+                unmerged=int(ahead) if ahead and ahead.isdigit() else None, branch=git(path, "branch", "--show-current"), mainPath=main)
+
+
+def report(as_json):
+    rows = registry()
+    worktrees = items(orca_json("worktree", "list"), "worktrees") or []
+    terminals = items(orca_json("terminal", "list"), "terminals") or []
+    paths = {norm(w.get("path")) for w in worktrees if TASK.match(Path(w.get("path") or "").name)}
+    known = set(paths)
+    for parent in {Path(p).parent for p in known}:  # Orca 목록에서 빠진 폴더도 보이게
+        paths |= {norm(str(d)) for d in parent.iterdir() if d.is_dir() and TASK.match(d.name)}
+    out = []
+    for p in sorted(paths):
+        tid = TASK.match(Path(p).name).group(1)
+        rec = rows.get(tid) or {}
+        current = norm(rec.get("path")) == p
+        out.append(dict(path=p, threadId=tid, project=rec.get("project"), status=rec.get("status") or "-",
+                        current=current, endedAt=rec.get("endedAt"), inOrca=p in known,
+                        terminals=sum(1 for t in terminals if norm(t.get("worktreePath")) == p), **inspect(p)))
+    if as_json:
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+    print("상태\t용량MB\t미커밋\t미병합\t터미널\t스레드\t경로")
+    for r in sorted(out, key=lambda r: (r["status"] not in FINISHED, -(r["sizeKB"] or 0))):
+        st = r["status"] + ("" if r["current"] else "(이전)")
+        print(f"{st}\t{(r['sizeKB'] or 0) // 1024}\t{'예' if r['dirty'] else ('?' if r['dirty'] is None else '-')}\t"
+              f"{'?' if r['unmerged'] is None else r['unmerged']}\t{r['terminals']}\t{r['threadId']}\t{r['path']}{'' if r['inOrca'] else ' (Orca 미등록)'}")
+    done = [r for r in out if r["status"] in FINISHED or not r["current"]]  # 이전 실행 worktree 포함
+    clean = [r for r in done if r["status"] not in ("active", "queued") and r["dirty"] is False and r["unmerged"] == 0]
+    mb = lambda rs: sum(r["sizeKB"] or 0 for r in rs) // 1024
+    print(f"\n전체 {len(out)}개 {mb(out)}MB / 끝난 작업·이전 실행 {len(done)}개 {mb(done)}MB / 그중 진행 중 스레드 외 미커밋·미병합 없음 {len(clean)}개 {mb(clean)}MB")
+    return 0
+
+
+def main(argv):
+    if len(argv) == 2 and argv[0] == "close-thread" and argv[1].isdigit():
+        return close_thread(argv[1])
+    if argv == ["sweep"]:
+        return sweep()
+    if argv[:1] == ["report"] and argv[1:] in ([], ["--json"]):
+        return report(bool(argv[1:]))
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

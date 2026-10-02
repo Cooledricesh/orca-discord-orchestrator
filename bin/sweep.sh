@@ -1,5 +1,6 @@
 #!/bin/zsh
-# 마크 정리 (launchd 5분): 터미널이 사라진 active → failed, IDLE_MIN(30분) 동안 사용자 메시지·터미널 출력이 없으면 → stopped, 고아 lease 회수.
+# 마크 정리 (launchd 5분): 터미널이 사라진 active → failed, IDLE_MIN(30분) 동안 사용자 메시지·터미널 출력이 없으면 → stopped,
+# 끝난 스레드 worktree 에 남은 터미널 닫기, 고아 lease 회수.
 # 무응답 기준: max(<threads>/<tid>.activity mtime (플러그인이 메시지 수신 시 갱신), Orca 터미널 lastOutputAt). 둘 다 없으면 startedAt.
 # 비전은 여기서 다루지 않는다 (bin/vision.sh, 사용자가 직접 종료).
 set -euo pipefail
@@ -30,6 +31,9 @@ registry_list active | while IFS=$'\t' read -r tid st project bot handle started
     "$ORCH_ROOT/bin/finish-worker.sh" "$tid" stopped || true
   fi
 done
+
+# 안전망: 등록부가 끝난(done/failed/stopped) 스레드의 task-<threadId>-* worktree 에 남은 터미널을 닫는다 (finish 가 건너뛰어진 경우·과거 잔여분)
+python3 "$ORCH_ROOT/bin/worktrees.py" sweep || log "끝난 worktree 터미널 정리 실패"
 
 # 고아 lease: pool 에 잡혀 있으나 등록부가 active 가 아닌 스레드
 python3 - "$POOL_FILE" "$THREADS_DIR" "$ORCH_ROOT/bin/pool.sh" <<'PY'
