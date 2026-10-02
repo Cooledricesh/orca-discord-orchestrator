@@ -338,11 +338,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse((self.area / "claude-calls").exists())
 
     def test_orca_returning_shared_folder_is_rejected(self):
-        r = self.command("spawn-worker.sh", CHANNEL, THREAD, TEST_ORCA_MODE="shared")
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("격리 확인 실패", r.stderr)
-        self.assertFalse(any(c[:2] == ["terminal", "create"] for c in self.calls()))
-        self.assertIsNone(json.loads((self.root / "state/pool.json").read_text())["마크1"]["threadId"])
+        # handle 이 있든 없든 공유 경로가 오면 원본 폴더의 터미널을 하나도 닫지 않는다
+        for handle in ("term_startup", "none"):
+            with self.subTest(startup_handle=handle):
+                (self.area / "orca-calls").unlink(missing_ok=True)
+                r = self.command("spawn-worker.sh", CHANNEL, THREAD, TEST_ORCA_MODE="shared", TEST_STARTUP_HANDLE=handle, TEST_LIST_STARTUP="term_shell")
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("격리 확인 실패", r.stderr)
+                self.assertFalse(any(c[:2] == ["terminal", "create"] for c in self.calls()))
+                self.assertFalse(any(c[:2] == ["terminal", "close"] for c in self.calls()), self.calls())
+                self.assertIsNone(json.loads((self.root / "state/pool.json").read_text())["마크1"]["threadId"])
 
     def test_terminal_failure_preserves_worktree_and_releases_bot(self):
         folder = Path(self.cfg["stateRoot"]) / "bots"
@@ -805,7 +810,7 @@ class RuntimeTests(unittest.TestCase):
             "else:\n"
             "    fcntl.flock(fd, fcntl.LOCK_UN)\n"
             "    Path(sys.argv[2]).write_text('acquired')\n"
-            "time.sleep(0.8)\n"
+            "time.sleep(2)\n"
             "Path(sys.argv[3]).write_text('alive')\n"
         )
         driver = self.area / "driver.zsh"
@@ -820,7 +825,8 @@ class RuntimeTests(unittest.TestCase):
             "lock, driver, result = sys.argv[1:]\n"
             "fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)\n"
             "fcntl.flock(fd, fcntl.LOCK_EX)\n"
-            "subprocess.check_call(['zsh', driver])\n"
+            "os.set_inheritable(fd, True)\n"
+            "subprocess.check_call(['zsh', driver], pass_fds=(fd,), env=dict(os.environ, ORCA_WORKER_SPAWN_LOCK_FD=str(fd)))\n"
             "for _ in range(40):\n"
             "    if os.path.exists(result):\n"
             "        break\n"
@@ -834,11 +840,18 @@ class RuntimeTests(unittest.TestCase):
             os.killpg(proc.pid, signal.SIGKILL)
             proc.wait(timeout=3)
             self.fail("detached spawn driver did not stop")
-        for _ in range(20):
+        self.assertEqual(result.read_text(), "blocked")
+        # holder 가 죽은 뒤 detached 자식이 아직 살아 있을 때 락이 풀려 있어야 한다 (자식이 fd 를 물려받았다면 잡힌 채로 남는다)
+        self.assertFalse(alive.exists(), "detached child finished before the lock check")
+        fd = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+        for _ in range(40):
             if alive.exists():
                 break
             time.sleep(0.1)
-        self.assertEqual(result.read_text(), "blocked")
         self.assertEqual(alive.read_text(), "alive")
 
     def test_claude_role_sets_subagent_model_tiers(self):

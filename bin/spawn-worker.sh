@@ -166,10 +166,10 @@ if (( new_wt )); then
     rm -f "$errf"
     wp="$(json_get "$out" result.worktree.path 2>/dev/null || json_get "$out" result.path 2>/dev/null || true)"
     [[ -n "$wp" && -d "$wp" ]] || die "Orca가 유효한 worktree 경로를 반환하지 않았습니다"
-    # 응답에 handle 이 있으면 그 터미널만 먼저 닫는다. 경로 확인 전에 목록으로 닫지 않는다 (원본 폴더를 닫지 않기 위해).
+    # 터미널은 격리 확인 뒤에만 닫는다 (공유 경로가 반환되면 원본 폴더 터미널을 닫지 않기 위해).
+    python3 "$ORCH_ROOT/bin/check-worktree.py" "$proj_path" "$wp" || die "worktree 격리 확인 실패 — 작업자를 실행하지 않습니다"
     st_handle="$(json_get "$out" result.startupTerminal.handle 2>/dev/null || true)"
     [[ -z "$st_handle" ]] || orca terminal close --terminal "$st_handle" --tab --json >/dev/null 2>&1 || warn "첫 터미널 닫기 실패: $st_handle"
-    python3 "$ORCH_ROOT/bin/check-worktree.py" "$proj_path" "$wp" || die "worktree 격리 확인 실패 — 작업자를 실행하지 않습니다"
     # 현재 Orca 는 worktree create 에 startupTerminal.handle 을 넣지 않고 빈 셸만 만든다. 확인된 새 경로의 기존 터미널을 닫는다.
     close_worktree_terminals "$wp"
     work_path="${wp:A}"
