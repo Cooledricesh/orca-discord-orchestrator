@@ -64,8 +64,9 @@ export function ensureAuthLink(cfg: Config, opts: { reauth?: boolean } = {}): Au
 
 /** Codex 로그인·인증 실패 여부 (스레드 안내·#운영-로그 알림용). */
 export function isAuthError(msg: string): boolean {
-  // 401 은 HTTP/인증 문맥에서만 (스택 트레이스의 parser.ts:401:12 같은 줄 번호 오탐 방지)
-  return /unauthorized|\(401\)|(?:status|http)\D{0,12}401\b|refresh token|sign in again|not logged in|인증 파일 없음/i.test(msg)
+  // 401 은 HTTP 상태 표기에서만: "(401)", "status 401", "status code: 401", "HTTP 401", "HTTP/1.1 401".
+  // 스택 트레이스의 parser.ts:401:12, status.ts:401:12 같은 파일명·줄 번호는 제외한다.
+  return /unauthorized|\(401\)|\b(?:status(?: code)?|http(?:\/[\d.]+)?)[\s:=]{1,3}401\b|refresh token|sign in again|not logged in|인증 파일 없음/i.test(msg)
 }
 
 /** 인증 실패 시 스레드에 남길 안내 (Discord 마크다운). detached: 자비스가 링크가 아닌 원본보다 새 별도 파일을 쓰는 중('kept-newer'). */

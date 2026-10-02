@@ -87,8 +87,13 @@ test('auth errors are recognized and the notice names the login command', () => 
     'Not logged in',
     'unexpected status 401 Unauthorized',
     'HTTP 401',
+    'request failed with status code: 401',
+    'HTTP/1.1 401',
   ]) expect(isAuthError(m)).toBe(true)
-  for (const m of ['시간 초과로 중단', 'codex 종료 코드 1: some stack trace', 'codex 종료 코드 1: Error at parser.ts:401:12']) expect(isAuthError(m)).toBe(false)
+  for (const m of [
+    '시간 초과로 중단', 'codex 종료 코드 1: some stack trace',
+    'codex 종료 코드 1: Error at parser.ts:401:12', 'codex 종료 코드 1: Error at status.ts:401:12', 'codex 종료 코드 1: Error at http.ts:401:12',
+  ]) expect(isAuthError(m)).toBe(false)
   const n = authFailureNotice('bad\n  token   401', '/Users/me/Application Support/codex/auth.json')
   expect(n).toContain('bad token 401')
   expect(n).toContain('CODEX_HOME="/Users/me/Application Support/codex" codex login')
