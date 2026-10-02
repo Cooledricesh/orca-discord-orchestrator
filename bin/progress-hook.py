@@ -176,7 +176,7 @@ def read_token(path: str) -> str:
     return ""
 
 
-def api(token: str, method: str, ep: str, body: dict | None = None):
+def api(token: str, method: str, ep: str, body: dict | None = None, timeout: float = 8):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(API + ep, data=data, method=method)
     req.add_header("Authorization", f"Bot {token}")
@@ -184,7 +184,7 @@ def api(token: str, method: str, ep: str, body: dict | None = None):
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             raw = r.read()
             return json.loads(raw) if raw else {}
     except Exception:

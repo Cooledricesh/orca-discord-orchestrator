@@ -163,20 +163,33 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 ## 툴 게이트 (Jev, 마크 Bash)
 
 `templates/progress-settings.json`의 PreToolUse(matcher `Bash`)로 `bin/tool-gate.py`가 마크의 Bash 호출마다 돈다
-(`ORCA_THREAD_ID` 없는 상시 세션·그록·자비스는 대상 아님). 읽기 전용 셸·git 조회·`post-result.sh`/`finish-worker.sh`는
-정규식·토큰 규칙으로 바로 allow, 나머지는 OpenRouter Decisions API의 Jev(`toolGate.model`)에 State/Choice(allow·ask·deny)로 묻는다.
-최종 판정은 코드가 한다: 확신도가 `threshold`(기본 0.85) 미만이면 allow·deny 모두 ask. 키는 공통 OpenRouter 키 파일의
+(`ORCA_THREAD_ID` 없는 상시 세션·그록·자비스는 대상 아님). 규칙으로 바로 allow 하는 것: 읽기 전용 셸·git 조회, `git add`/`commit`
+(작업 폴더 안), `<ORCH_ROOT>/bin/post-result.sh`·`finish-worker.sh`(절대 경로·`$ORCH_ROOT`·앞서 대입한 변수 모두),
+작업 폴더(`CLAUDE_PROJECT_DIR`, 없으면 훅 cwd)·세션 스크래치(`/private/tmp/claude-<uid>/<슬러그>/`, `/tmp/…`)로의 `>`·`>>`·`mkdir -p`,
+`<ORCH_ROOT>/runs/**/*.md` 덧붙이기(`>>`만). 따옴표를 따라가는 스캐너가 명령·프로세스 치환(작은따옴표 안, `` \` ``·`` \$( `` 이스케이프는 제외),
+따옴표 없는 heredoc 본문의 치환, 서브셸을 거르고, 같은 명령 앞쪽의 `NAME=값` 대입과 `cd`를 따라 경로를 펼친다(`..` 정규화,
+모르는 변수·glob·`~user`면 Jev). `PATH`·`GIT_*`·`*PAGER` 같은 대입은 규칙 allow 하지 않는다.
+나머지는 OpenRouter Decisions API의 Jev(`toolGate.model`)에 State/Choice(allow·ask·deny)로 묻는다. State에 작업 폴더·스크래치 경로와
+"runs 로그 덧붙이기·post-result/finish-worker 호출은 필수 보고 절차"를 넣는다.
+최종 판정은 코드가 한다: allow는 확신도 `allowThreshold`(기본 0.75), deny는 `threshold`(기본 0.85) 미만이면 ask. 키는 공통 OpenRouter 키 파일의
 `OPENROUTER_API_KEY=` 한 줄이며, 키 없음·3.5초 타임아웃·네트워크·응답 형식 오류는 allow(fail-open)하고 기록에 `error`를 남긴다.
-기록은 `state/tool-gate/<스레드>.jsonl`(ts·command 앞 300자·decision·verdict·confidence·ms·mode·source·error).
+기록은 `state/tool-gate/<스레드>.jsonl`(ts·command 앞 300자·decision·verdict·confidence·ms·mode·source·error·qv).
+`qv`는 질문·규칙 버전(`QUESTION_VERSION`)이라 바꾸기 전후 기록을 가른다. `source`: rule·jev·fail-open·approval.
 `routes.json` `toolGate.mode`: `shadow`(기본, 판정·기록만 하고 훅은 즉시 반환 — 분리 자식이 처리), `enforce`, `off`.
 섀도 누적 집계는 `state/tool-gate/summary.json`이며, Jev 판정 수·마크 작업 수가 `toolGate.reviewAt`(기본 50건·10개)에
 처음 닿으면 운영 로그 채널에 소유자 멘션으로 검토 알림(판정 분포·확신도 미달·fail-open 수)을 한 번 올린다. 다시 받으려면 `summary.json`을 지운다.
 `toolGate.notify: true`면 섀도에서 ask/deny 판정을 스레드에 한 줄 알린다(기본 off).
+**재측정**: 규칙·질문을 바꾼 뒤에는 `summary.json`을 보관(`summary-<날짜>.json`)하고 새로 집계한다(`qv`로 새 기록만 본다).
+재알림 후 부당 ask 비율이 10% 아래면 enforce.
 **enforce 전환**: 섀도 기록에서 오판(`source=jev`인데 부당한 ask/deny)을 먼저 확인한 뒤 `toolGate.mode`를 `"enforce"`로 바꾼다.
-훅이 매번 설정을 읽으므로 재시작은 필요 없다. enforce는 동기 판정이며 deny는 차단, ask는 차단 + "스레드에 소유자 확인을 요청하고
-기다려라"는 사유를 모델에 돌려준다(Claude의 `ask` 결정은 터미널 확인을 띄워 마크가 멈추므로 쓰지 않는다).
-미구현 설계: ask 때 게이트가 스레드에 확인 버튼을 올리고 소유자 승인을 `state/tool-gate/<스레드>.approvals.json`에 명령 해시로 기록하면,
-같은 명령 재시도 시 게이트가 allow하는 확인-대기 UX.
+훅이 매번 설정을 읽으므로 재시작은 필요 없다. enforce는 동기 판정이며 deny는 차단(승인 불가), ask는 차단 + 확인 요청이다
+(Claude의 `ask` 결정은 터미널 확인을 띄워 마크가 멈추므로 쓰지 않는다).
+**승인 흐름 (enforce)**: Jev ask면 게이트가 마크 봇으로 스레드에 `` 🛡 확인 필요 (@소유자): `명령` ``을 올리고
+`state/tool-gate/<스레드>.approvals.json`에 명령 전체의 sha256 키로 `{messageId, command, requested, approved}`를 남긴 뒤,
+"기다렸다가 승인되면 같은 명령을 그대로 다시 실행하라"는 사유로 막는다. 소유자(`ownerUserId`)가 그 메시지에 ✅를 누르고 스레드에
+"진행"이라고 쓰면, 마크의 재시도 때 게이트가 반응을 조회해 승인으로 기록하고 allow한다. 승인은 60분 유효(지나면 다시 요청).
+대기 중 재시도는 Jev 없이 막고 메시지를 다시 올리지 않는다. 승인 조회는 규칙 다음·Jev 전, Discord 호출은 1.5초 이내.
+게시 실패(토큰 없음 등)면 요청 없이 막기만 한다. 섀도에서는 승인 메시지를 올리지 않는다.
 
 ## 자동 실행 등록
 

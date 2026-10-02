@@ -38,6 +38,56 @@ class RuleTests(unittest.TestCase):
             with self.subTest(unsafe=cmd):
                 self.assertFalse(gate.safe_by_rule(cmd, "/orch"))
 
+    def test_write_roots(self):
+        roots = gate.write_roots("/Users/x/orca/workspaces/local_llm_evaluation/task-1")
+        slug = "-Users-x-orca-workspaces-local-llm-evaluation-task-1"
+        self.assertEqual(roots, ["/Users/x/orca/workspaces/local_llm_evaluation/task-1",
+                                 f"/private/tmp/claude-{os.getuid()}/{slug}", f"/tmp/claude-{os.getuid()}/{slug}"])
+        self.assertEqual(gate.write_roots(os.path.expanduser("~")), [])
+        self.assertEqual(gate.write_roots("rel"), [])
+
+
+class ContextRuleTests(unittest.TestCase):
+    """작업 폴더·스크래치·대입 추적·heredoc·치환 스캐너."""
+    WT = "/Users/x/orca/workspaces/p/task-1"
+    ROOTS = gate.write_roots(WT)
+    S = ROOTS[1] + "/sess/scratchpad"
+    SAFE = ["S=/a/b; cat $S/x", "echo '`x` $(y)'",
+            '"$ORCH_ROOT/bin/post-result.sh" t ok "본문 \\`code\\` 끝"',
+            f"S={S}; cat > $S/x.sh <<'EOF'\nrm -rf / `x` $(y)\nEOF\nls $S",
+            f"cat > {S}/x <<EOF\nhi \\$(x) $HOME\nEOF", f"cat > {S}/x <<-EOF\n\thi\n\tEOF\necho done",
+            f"S={S}; echo x > $S/a/../b", "echo x > out.txt", "mkdir -p build/x && echo 1 >> build/x/log",
+            "echo '- 결과' >> /orch/runs/proj/2026-10-02.md", 'echo x >> "$ORCH_ROOT/runs/p/d.md"',
+            'R=/orch; "$R/bin/post-result.sh" a b', "'/orch/bin/post-result.sh' a b", "/orch/bin/../bin/finish-worker.sh",
+            "git add -A && git commit -m 'msg'", "git commit --amend --no-edit", f"git -C {WT} add .",
+            "grep x f 2>/dev/null | head; ls 2>&1", "echo hi 2>err.txt", "cat < /etc/hosts", f"cd {S} && echo x > a",
+            "ls # c > /etc/x\nls"]
+    UNSAFE = ['"$ORCH_ROOT/bin/post-result.sh" t ok "본문 `code` 끝"', f"cat > {S}/x <<EOF\n$(whoami)\nEOF",
+              f"cat > {S}/x <<EOF\nhi", f"S={S}; echo x > $S/../../../etc/x", "mkdir -p /etc/x", "mkdir -p ~/x",
+              "mkdir -m 777 x", "echo x > /orch/runs/proj/2026-10-02.md", "echo x >> /orch/runs/proj/a.sh",
+              "'/evil/bin/post-result.sh' a", 'ORCH_ROOT=/evil; "$ORCH_ROOT/bin/post-result.sh" a',
+              'ORCH_ROOT=$X; "$ORCH_ROOT/bin/post-result.sh" a', "cd /other && git commit -m x",
+              "git -C /other commit -m x", 'git commit -m "$(cat <<EOF\nx\nEOF\n)"', "cat <(ls)", "diff >(x) y",
+              "ls # c\nrm -rf ~", "PATH=/tmp/x:$PATH; ls", "GIT_PAGER=sh git log", "echo x > $UNKNOWN/a",
+              "echo x > ~root/a", "echo x &> /etc/x", "echo x >| /etc/passwd", "echo x >&/etc/passwd",
+              'find ">" -delete', f"echo x > {S}/*.md", "mkdir -p $HOME/{a,b}", "( ls )", "cd /tmp; echo x > a",
+              "x=1 > /etc/x", "S=~/x; echo > $S", "cat a <> b", "ssh host ls", "kill 1", "launchctl list",
+              "npm install x", "git push", "rm -rf build"]
+
+    def test_with_roots(self):
+        for cmd in self.SAFE:
+            with self.subTest(safe=cmd):
+                self.assertTrue(gate.safe_by_rule(cmd, "/orch", self.ROOTS))
+        for cmd in self.UNSAFE:
+            with self.subTest(unsafe=cmd):
+                self.assertFalse(gate.safe_by_rule(cmd, "/orch", self.ROOTS))
+
+    def test_no_roots_no_writes(self):
+        for cmd in ("echo x > out.txt", "mkdir -p build", "git add -A"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(gate.safe_by_rule(cmd, "/orch"))
+        self.assertTrue(gate.safe_by_rule("ls 2>/dev/null > /dev/null", "/orch"))
+
 
 class ParseDecideTests(unittest.TestCase):
     def test_parse_valid(self):
@@ -59,6 +109,9 @@ class ParseDecideTests(unittest.TestCase):
         self.assertEqual(gate.decide("allow", 0.9, 0.85), "allow")
         self.assertEqual(gate.decide("deny", 0.9, 0.85), "deny")
         self.assertEqual(gate.decide("ask", 0.99, 0.85), "ask")
+        self.assertEqual(gate.decide("allow", 0.8, 0.85, 0.75), "allow")
+        self.assertEqual(gate.decide("allow", 0.7, 0.85, 0.75), "ask")
+        self.assertEqual(gate.decide("deny", 0.8, 0.85, 0.75), "ask")
 
 
 class EvaluateTests(unittest.TestCase):
@@ -118,7 +171,7 @@ class RunGateTests(unittest.TestCase):
             path = Path(env["STATE_DIR_ROOT"]) / "tool-gate" / "t1.jsonl"
             lines = [json.loads(l) for l in path.read_text().splitlines()]
             self.assertEqual(len(lines), 2)
-            for key in ("ts", "command", "decision", "confidence", "ms", "mode", "source", "error"):
+            for key in ("ts", "command", "decision", "confidence", "ms", "mode", "source", "error", "qv"):
                 self.assertIn(key, lines[0])
             self.assertEqual(lines[0]["command"], cmd[:300])
             self.assertEqual((lines[0]["source"], lines[0]["mode"]), ("rule", "enforce"))
@@ -144,12 +197,17 @@ class OutputConfigTests(unittest.TestCase):
             self.assertEqual(out["permissionDecision"], "deny")
             self.assertTrue(out["permissionDecisionReason"])
         self.assertIn("스레드", gate.enforce_output({"decision": "ask"})["hookSpecificOutput"]["permissionDecisionReason"])
+        asked = gate.enforce_output({"decision": "ask", "approval": "requested"})["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("확인 요청을 올렸다", asked)
 
     def test_config(self):
         cfg = config.tool_gate({})
         self.assertEqual((cfg["mode"], cfg["threshold"], cfg["notify"]), ("shadow", 0.85, False))
         bad = config.tool_gate({"toolGate": {"mode": "loud", "threshold": 2}})
         self.assertEqual((bad["mode"], bad["threshold"]), ("shadow", 0.85))
+        self.assertEqual(cfg["allowThreshold"], 0.75)
+        self.assertEqual(config.tool_gate({"toolGate": {"allowThreshold": 0.6}})["allowThreshold"], 0.6)
+        self.assertEqual(config.tool_gate({"toolGate": {"allowThreshold": 0}})["allowThreshold"], 0.75)
         self.assertEqual(config.tool_gate({"toolGate": {"mode": "enforce"}})["mode"], "enforce")
         self.assertEqual(config.tool_gate({})["reviewAt"], {"jev": 50, "threads": 10})
         review = config.tool_gate({"toolGate": {"reviewAt": {"jev": 5, "threads": 0}}})["reviewAt"]
@@ -159,6 +217,110 @@ class OutputConfigTests(unittest.TestCase):
         data = json.loads((ROOT / "templates/progress-settings.json").read_text())
         hooks = [h for e in data["hooks"]["PreToolUse"] if e.get("matcher") == "Bash" for h in e["hooks"]]
         self.assertTrue(any("tool-gate.py" in h["command"] and h["timeout"] == 5 for h in hooks))
+
+
+def jev_says(choice, conf=0.95):
+    return Mock(return_value={"answers": {"gate": {"choice": choice, "confidence": conf}}})
+
+
+class ApprovalTests(unittest.TestCase):
+    """enforce ask → 스레드 ✅ 요청 → 소유자 반응이면 60분 allow. 네트워크 없이 rest·jev 를 바꿔 끼운다."""
+    OWNER = "42"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.env = {"STATE_DIR_ROOT": os.path.join(self.temp.name, "state")}
+        key = Path(self.temp.name) / "k.env"; key.write_text("OPENROUTER_API_KEY=k\n")
+        self.cfg = dict(CFG, keyFile=str(key), ownerUserId=self.OWNER, allowThreshold=0.75)
+        self.path = gate.approvals_path(self.env["STATE_DIR_ROOT"], "t1")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def run_gate(self, jev, rest, cmd=RISKY):
+        with unittest.mock.patch.object(gate, "call_jev", jev):
+            ev = {"tool_input": {"command": cmd}, "cwd": self.temp.name}
+            return gate.run_gate(ev, "t1", self.cfg, self.env, rest=rest)
+
+    def entry(self, **kw):
+        gate.save_approvals(self.path, {gate.command_key(RISKY): {"messageId": "m1", "command": RISKY,
+                                                                  "requested": int(time.time()), **kw}})
+
+    def test_approved_within_ttl_skips_jev(self):
+        self.entry(approved=int(time.time()) - 600)
+        jev, rest = Mock(), Mock()
+        rec = self.run_gate(jev, rest)
+        self.assertEqual((rec["decision"], rec["source"]), ("allow", "approval"))
+        jev.assert_not_called(); rest.assert_not_called()
+
+    def test_expired_approval_asks_again(self):
+        self.entry(approved=int(time.time()) - gate.APPROVAL_TTL_S - 1)
+        rest = Mock(return_value={"id": "m2"})
+        rec = self.run_gate(jev_says("ask"), rest)
+        self.assertEqual((rec["decision"], rec["approval"]), ("ask", "requested"))
+        self.assertEqual(gate.load_approvals(self.path)[gate.command_key(RISKY)]["messageId"], "m2")
+
+    def test_owner_reaction_allows(self):
+        self.entry(approved=None)
+        jev, rest = Mock(), Mock(return_value=[{"id": "7"}, {"id": self.OWNER}])
+        rec = self.run_gate(jev, rest)
+        self.assertEqual((rec["decision"], rec["source"]), ("allow", "approval"))
+        jev.assert_not_called()
+        method, ep = rest.call_args.args[:2]
+        self.assertEqual((method, ep), ("GET", "/channels/t1/messages/m1/reactions/%E2%9C%85"))
+        self.assertTrue(gate.load_approvals(self.path)[gate.command_key(RISKY)]["approved"])
+        rest2 = Mock()  # 다음 호출은 로컬 기록만으로
+        self.assertEqual(self.run_gate(Mock(), rest2)["decision"], "allow")
+        rest2.assert_not_called()
+
+    def test_non_owner_reaction_stays_blocked(self):
+        self.entry(approved=None)
+        jev, rest = Mock(), Mock(return_value=[{"id": "7"}])
+        rec = self.run_gate(jev, rest)
+        self.assertEqual((rec["decision"], rec["source"], rec["approval"]), ("ask", "approval", "pending"))
+        jev.assert_not_called()
+        self.assertEqual(rest.call_count, 1)  # GET 만, 재게시 없음
+        self.assertIn("올렸다", gate.enforce_output(rec)["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_ask_posts_once(self):
+        rest = Mock(return_value={"id": "m9"})
+        rec = self.run_gate(jev_says("ask"), rest)
+        self.assertEqual((rec["decision"], rec["source"], rec["approval"]), ("ask", "jev", "requested"))
+        method, ep, body = rest.call_args.args
+        self.assertEqual((method, ep), ("POST", "/channels/t1/messages"))
+        self.assertIn("<@42>", body["content"]); self.assertIn("✅", body["content"])
+        self.assertEqual(body["allowed_mentions"], {"users": ["42"]})
+        saved = gate.load_approvals(self.path)[gate.command_key(RISKY)]
+        self.assertEqual((saved["messageId"], saved["command"], saved["approved"]), ("m9", RISKY, None))
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+        rest2 = Mock(return_value=[])
+        rec2 = self.run_gate(jev_says("ask"), rest2)
+        self.assertEqual(rec2["decision"], "ask")
+        self.assertEqual([c.args[0] for c in rest2.call_args_list], ["GET"])
+
+    def test_post_failure_blocks_without_entry(self):
+        rec = self.run_gate(jev_says("ask"), Mock(return_value=None))
+        self.assertEqual(rec["decision"], "ask")
+        self.assertNotIn("approval", rec)
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_deny_not_approvable(self):
+        rest = Mock()
+        rec = self.run_gate(jev_says("deny"), rest)
+        self.assertEqual(rec["decision"], "deny")
+        rest.assert_not_called()
+        self.assertFalse(os.path.exists(self.path))
+
+    def test_low_confidence_allow_uses_allow_threshold(self):
+        rec = self.run_gate(jev_says("allow", 0.8), Mock())
+        self.assertEqual(rec["decision"], "allow")
+
+    def test_shadow_no_approval(self):
+        self.cfg["mode"] = "shadow"
+        rest = Mock()
+        rec = self.run_gate(jev_says("ask"), rest)
+        self.assertEqual(rec["decision"], "ask")
+        rest.assert_not_called()
 
 
 class TallyTests(unittest.TestCase):
