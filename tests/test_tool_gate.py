@@ -62,7 +62,11 @@ class ContextRuleTests(unittest.TestCase):
             'R=/orch; "$R/bin/post-result.sh" a b', "'/orch/bin/post-result.sh' a b", "/orch/bin/../bin/finish-worker.sh",
             "git add -A && git commit -m 'msg'", "git commit --amend --no-edit", f"git -C {WT} add .",
             "grep x f 2>/dev/null | head; ls 2>&1", "echo hi 2>err.txt", "cat < /etc/hosts", f"cd {S} && echo x > a",
-            "ls # c > /etc/x\nls"]
+            "ls # c > /etc/x\nls", "cd /orch && bin/post-result.sh a b", "cd /orch && ls && ./bin/finish-worker.sh 1 stopped",
+            "printf '## %s\\n' \"$(date +%H:%M)\" >> /orch/runs/p/$(date +%F).md",
+            "cat >> /orch/runs/p/d.md <<EOF\n## $(date +%H:%M) x\nEOF",
+            "until grep -q DONE x.log; do sleep 5; done; tail -3 x.log",
+            'while pgrep -f "a b" >/dev/null; do sleep 20; done; echo done']
     UNSAFE = ['"$ORCH_ROOT/bin/post-result.sh" t ok "본문 `code` 끝"', f"cat > {S}/x <<EOF\n$(whoami)\nEOF",
               f"cat > {S}/x <<EOF\nhi", f"S={S}; echo x > $S/../../../etc/x", "mkdir -p /etc/x", "mkdir -p ~/x",
               "mkdir -m 777 x", "echo x > /orch/runs/proj/2026-10-02.md", "echo x >> /orch/runs/proj/a.sh",
@@ -73,7 +77,11 @@ class ContextRuleTests(unittest.TestCase):
               "echo x > ~root/a", "echo x &> /etc/x", "echo x >| /etc/passwd", "echo x >&/etc/passwd",
               'find ">" -delete', f"echo x > {S}/*.md", "mkdir -p $HOME/{a,b}", "( ls )", "cd /tmp; echo x > a",
               "x=1 > /etc/x", "S=~/x; echo > $S", "cat a <> b", "ssh host ls", "kill 1", "launchctl list",
-              "npm install x", "git push", "rm -rf build"]
+              "npm install x", "git push", "rm -rf build",
+              "echo $(date -s 0101)", "echo $(date +%F; rm x)", "cd /other && ./bin/post-result.sh a", "cd /orch; ./bin/post-result.sh a",
+              "cd /orch && ls; ./bin/post-result.sh a", "cd /orch && ls || ./bin/post-result.sh a",
+              "bin/post-result.sh a", "echo x > /orch/runs/p/$(date +%F).sh", "while true; do rm -rf x; done",
+              "until ls; do sleep 1; done | sh", "while; do ls; done", "done x"]
 
     def test_with_roots(self):
         for cmd in self.SAFE:
@@ -206,9 +214,9 @@ class OutputConfigTests(unittest.TestCase):
         self.assertEqual((cfg["mode"], cfg["threshold"], cfg["notify"]), ("shadow", 0.85, False))
         bad = config.tool_gate({"toolGate": {"mode": "loud", "threshold": 2}})
         self.assertEqual((bad["mode"], bad["threshold"]), ("shadow", 0.85))
-        self.assertEqual(cfg["allowThreshold"], 0.75)
+        self.assertEqual(cfg["allowThreshold"], 0.5)
         self.assertEqual(config.tool_gate({"toolGate": {"allowThreshold": 0.6}})["allowThreshold"], 0.6)
-        self.assertEqual(config.tool_gate({"toolGate": {"allowThreshold": 0}})["allowThreshold"], 0.75)
+        self.assertEqual(config.tool_gate({"toolGate": {"allowThreshold": 0}})["allowThreshold"], 0.5)
         self.assertEqual(config.tool_gate({"toolGate": {"mode": "enforce"}})["mode"], "enforce")
         self.assertEqual(config.tool_gate({})["reviewAt"], {"jev": 50, "threads": 10})
         review = config.tool_gate({"toolGate": {"reviewAt": {"jev": 5, "threads": 0}}})["reviewAt"]

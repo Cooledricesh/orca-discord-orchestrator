@@ -26,12 +26,13 @@ DISCORD_TIMEOUT_S = 1.5
 APPROVAL_TTL_S = 3600
 APPROVE_EMOJI = "✅"
 CHOICES = ("allow", "ask", "deny")
-QUESTION_VERSION = "bash-gate-v2-20261002"
+QUESTION_VERSION = "bash-gate-v3-20261007"
 
 SAFE_CMDS = {
     "ls", "cat", "head", "tail", "grep", "egrep", "rg", "wc", "pwd", "echo", "printf", "which", "file",
     "stat", "du", "df", "tree", "sort", "uniq", "cut", "tr", "diff", "cmp", "jq", "date", "basename",
     "dirname", "realpath", "readlink", "true", "test", "[", "cd", "sed", "find", "ps", "whoami", "uname",
+    "sleep", "pgrep",
 }
 SAFE_GIT = {"status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "grep", "describe",
             "merge-base", "cat-file", "shortlog"}
@@ -52,6 +53,10 @@ DUP_FD = re.compile(r">&(?:\d+|-)(?=$|[\s;&|)])")
 RISKY_VARS = re.compile(r"PATH|IFS|ENV|BASH_ENV|CDPATH|HOME|SHELLOPTS|BASHOPTS|PS4|PROMPT_COMMAND|"
                         r"LD_\w*|DYLD_\w*|GIT_\w*|\w*PAGER|EDITOR|VISUAL|LESS\w*|PYTHON\w*|NODE_OPTIONS|PERL5\w*|RUBYOPT")
 DEV_SINKS = {"/dev/null", "/dev/stdout", "/dev/stderr"}
+# 보고 절차에 흔한 날짜 치환만 허용한다 ($(date +%F) 등). 형식 인자 외의 옵션(-s 등)은 안 된다
+DATE_SUBST = re.compile(r"\$\(date(?: \+[%A-Za-z0-9:_.-]+)?\)")
+DATE_WORD = "DATE"
+LOOP_WORDS = {"while", "until", "do"}  # 뒤따르는 명령을 그대로 검사한다 (done 은 단독일 때만)
 
 
 def write_roots(worktree: str) -> list[str]:
@@ -69,7 +74,7 @@ def has_subst(text: str) -> bool:
         if text[i] == "\\":
             i += 2
             continue
-        if text[i] == "`" or text.startswith("$(", i):
+        if text[i] == "`" or text.startswith("$(", i) and not DATE_SUBST.match(text, i):
             return True
         i += 1
     return False
@@ -108,6 +113,11 @@ def scan(cmd: str) -> str | None:
             elif not (nxt == "\n" and state is None):  # 따옴표 밖 \⏎ 는 줄 이음
                 out.append(c + nxt)
             i += 2
+            continue
+        m = DATE_SUBST.match(cmd, i) if c == "$" else None
+        if m:
+            out.append(DATE_WORD)
+            i = m.end()
             continue
         if c == "`" or cmd.startswith("$(", i):
             return None
@@ -191,6 +201,8 @@ class RuleCtx:
         if self.orch_root:
             self.vars["ORCH_ROOT"] = self.orch_root
         self.cwds = {os.path.normpath(cwd)} if cwd and os.path.isabs(cwd) else None  # 가능한 cwd 들 (cd 실패 가능성 포함)
+        self.cd_from: set[str] | None = None  # 직전 cd 전의 cwd 들
+        self.aborted: set[str] = set()       # cd 가 실패해 && 사슬이 끊겼을 때의 cwd 들
 
     def expand(self, word: str, assign: bool = False) -> str | None:
         if word.startswith("~"):
@@ -225,7 +237,21 @@ class RuleCtx:
     def cd(self, args: list[str]) -> None:
         target = args[0] if args else "~"
         new = None if target == "-" or len(args) > 1 else self.resolve(target)
-        self.cwds = self.cwds | set(new) if self.cwds is not None and new else None
+        self.cd_from = self.cwds if self.cwds is not None and new else None
+        self.cwds = set(new) if self.cd_from is not None else None
+
+    def chain(self, op: str) -> None:
+        """cd 뒤 && 사슬 안에서는 새 cwd 만, 사슬이 끝나면(; ⏎ || | &) cd 실패 때의 cwd 도 다시 가능하다."""
+        if self.cd_from is not None:
+            if op == "&&":
+                self.aborted |= self.cd_from
+            elif self.cwds is not None:
+                self.cwds |= self.cd_from
+            self.cd_from = None
+        if op != "&&" and self.aborted:
+            if self.cwds is not None:
+                self.cwds |= self.aborted
+            self.aborted = set()
 
 
 def safe_by_rule(cmd: str, orch_root: str = "", roots: list[str] | None = None, cwd: str | None = None) -> bool:
@@ -250,6 +276,7 @@ def safe_by_rule(cmd: str, orch_root: str = "", roots: list[str] | None = None, 
                 return False  # 서브셸·남은 리다이렉트 (따옴표 안 ">" 도 보수적으로)
             if segment and not safe_segment(segment, ctx):
                 return False
+            ctx.chain(tok)
             segment = []
         else:
             segment.append(tok)
@@ -266,6 +293,14 @@ def safe_segment(words: list[str], ctx: RuleCtx) -> bool:
                 return False  # 쓰기는 작업 폴더·스크래치·runs/*.md 덧붙이기만
         else:
             plain.append(w)
+    if plain == ["done"]:
+        return True
+    if plain and plain[0] in LOOP_WORDS:
+        if plain[0] != "do" and len(plain) == 1:
+            return False
+        plain = plain[1:]
+        if not plain:
+            return True
     assigns = []
     while plain and ASSIGN.fullmatch(plain[0]):
         assigns.append(ASSIGN.fullmatch(plain.pop(0)).groups())
@@ -276,9 +311,9 @@ def safe_segment(words: list[str], ctx: RuleCtx) -> bool:
             ctx.vars[name] = ctx.expand(value, assign=True)
         return True
     head, args = plain[0], plain[1:]
-    exp = ctx.expand(head)
-    if exp and os.path.basename(exp) in OPS_SCRIPTS and ctx.orch_root \
-            and os.path.normpath(os.path.dirname(exp)) == os.path.join(ctx.orch_root, "bin"):
+    ops = ctx.resolve(head) if "/" in head and ctx.orch_root else None  # 절대 경로·cd 뒤 상대 경로
+    if ops and all(os.path.basename(p) in OPS_SCRIPTS and os.path.dirname(p) == os.path.join(ctx.orch_root, "bin")
+                   for p in ops):
         return True
     if "ORCH_ROOT" not in ctx.vars and head in {f"{p}/bin/{s}" for p in ("$ORCH_ROOT", "${ORCH_ROOT}") for s in OPS_SCRIPTS}:
         return True

@@ -164,14 +164,14 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 
 `templates/progress-settings.json`의 PreToolUse(matcher `Bash`)로 `bin/tool-gate.py`가 마크의 Bash 호출마다 돈다
 (`ORCA_THREAD_ID` 없는 상시 세션·그록·자비스는 대상 아님). 규칙으로 바로 allow 하는 것: 읽기 전용 셸·git 조회, `git add`/`commit`
-(작업 폴더 안), `<ORCH_ROOT>/bin/post-result.sh`·`finish-worker.sh`(절대 경로·`$ORCH_ROOT`·앞서 대입한 변수 모두),
+(작업 폴더 안), `<ORCH_ROOT>/bin/post-result.sh`·`finish-worker.sh`(절대 경로·`$ORCH_ROOT`·앞서 대입한 변수·`cd <ORCH_ROOT> &&` 뒤 상대 경로),
 작업 폴더(`CLAUDE_PROJECT_DIR`, 없으면 훅 cwd)·세션 스크래치(`/private/tmp/claude-<uid>/<슬러그>/`, `/tmp/…`)로의 `>`·`>>`·`mkdir -p`,
-`<ORCH_ROOT>/runs/**/*.md` 덧붙이기(`>>`만). 따옴표를 따라가는 스캐너가 명령·프로세스 치환(작은따옴표 안, `` \` ``·`` \$( `` 이스케이프는 제외),
-따옴표 없는 heredoc 본문의 치환, 서브셸을 거르고, 같은 명령 앞쪽의 `NAME=값` 대입과 `cd`를 따라 경로를 펼친다(`..` 정규화,
-모르는 변수·glob·`~user`면 Jev). `PATH`·`GIT_*`·`*PAGER` 같은 대입은 규칙 allow 하지 않는다.
+`<ORCH_ROOT>/runs/**/*.md` 덧붙이기(`>>`만), `until`/`while … ; do …; done` 대기 루프(안의 명령을 각각 검사, `sleep`·`pgrep` 허용). 따옴표를 따라가는 스캐너가 명령·프로세스 치환(작은따옴표 안, `` \` ``·`` \$( `` 이스케이프는 제외),
+따옴표 없는 heredoc 본문의 치환, 서브셸을 거르고(단 `$(date +형식)`은 허용),  같은 명령 앞쪽의 `NAME=값` 대입과 `cd`를 따라 경로를 펼친다(`..` 정규화,
+모르는 변수·glob·`~user`면 Jev). `cd` 뒤 cwd는 같은 `&&` 사슬 안에서만 새 경로로 보고, `;`·`||`·`|`·줄바꿈 뒤에는 cd 실패 때의 cwd도 함께 본다. `PATH`·`GIT_*`·`*PAGER` 같은 대입은 규칙 allow 하지 않는다.
 나머지는 OpenRouter Decisions API의 Jev(`toolGate.model`)에 State/Choice(allow·ask·deny)로 묻는다. State에 작업 폴더·스크래치 경로와
 "runs 로그 덧붙이기·post-result/finish-worker 호출은 필수 보고 절차"를 넣는다.
-최종 판정은 코드가 한다: allow는 확신도 `allowThreshold`(기본 0.75), deny는 `threshold`(기본 0.85) 미만이면 ask. 키는 공통 OpenRouter 키 파일의
+최종 판정은 코드가 한다: allow는 확신도 `allowThreshold`(기본 0.5), deny는 `threshold`(기본 0.85) 미만이면 ask. 키는 공통 OpenRouter 키 파일의
 `OPENROUTER_API_KEY=` 한 줄이며, 키 없음·3.5초 타임아웃·네트워크·응답 형식 오류는 allow(fail-open)하고 기록에 `error`를 남긴다.
 기록은 `state/tool-gate/<스레드>.jsonl`(ts·command 앞 300자·decision·verdict·confidence·ms·mode·source·error·qv).
 `qv`는 질문·규칙 버전(`QUESTION_VERSION`)이라 바꾸기 전후 기록을 가른다. `source`: rule·jev·fail-open·approval.
