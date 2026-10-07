@@ -7,8 +7,8 @@
 - 2차: 나머지는 OpenRouter Decisions API(Jev)에 State/Choice 로 묻는다. 최종 판정은 코드가 한다
   (allow 는 확신도 < allowThreshold, deny 는 < threshold 면 ask 로 내린다).
 - 키 없음·타임아웃·네트워크·응답 형식 오류는 fail-open(allow) 하고 기록에 error 를 남긴다.
-- 모드: routes.json toolGate.mode — shadow(기본: 분리 자식이 판정·기록만, 훅은 즉시 반환) /
-  enforce(동기 판정, deny 는 차단, ask 는 차단 + 스레드에 ✅ 확인 요청. 소유자가 ✅ 를 누르면 60분간 같은 명령 allow) / off.
+- 모드: routes.json toolGate.mode — shadow(분리 자식이 판정·기록만, 훅은 즉시 반환) /
+  enforce(기본. 동기 판정, deny 는 차단, ask 는 차단 + 스레드에 ✅ 확인 요청. 소유자가 ✅ 를 누르면 60분간 같은 명령 allow) / off.
 기록: $STATE_DIR_ROOT/tool-gate/<threadId>.jsonl (qv=질문 버전). 승인: tool-gate/<threadId>.approvals.json.
 누적 집계: tool-gate/summary.json — 섀도에서 Jev 판정 수·스레드 수가
 toolGate.reviewAt(기본 50건·10개)에 처음 닿으면 운영 로그 채널에 소유자 멘션으로 검토 알림을 한 번 올린다. 키: config.openrouter_key_file (routes.json openrouterKeyFile > $BOTS_DIR/openrouter.env, OPENROUTER_API_KEY=).
@@ -26,20 +26,25 @@ DISCORD_TIMEOUT_S = 1.5
 APPROVAL_TTL_S = 3600
 APPROVE_EMOJI = "✅"
 CHOICES = ("allow", "ask", "deny")
-QUESTION_VERSION = "bash-gate-v3-20261007"
+QUESTION_VERSION = "bash-gate-v4-20261007"
 
 SAFE_CMDS = {
     "ls", "cat", "head", "tail", "grep", "egrep", "rg", "wc", "pwd", "echo", "printf", "which", "file",
     "stat", "du", "df", "tree", "sort", "uniq", "cut", "tr", "diff", "cmp", "jq", "date", "basename",
     "dirname", "realpath", "readlink", "true", "test", "[", "cd", "sed", "find", "ps", "whoami", "uname",
-    "sleep", "pgrep",
+    "sleep", "pgrep", "lsof",
 }
 SAFE_GIT = {"status", "diff", "log", "show", "rev-parse", "ls-files", "blame", "grep", "describe",
-            "merge-base", "cat-file", "shortlog"}
+            "merge-base", "cat-file", "shortlog", "ls-remote", "rev-list", "check-ignore", "for-each-ref"}
 SAFE_GIT_LIST = {"stash": {"list", "show"}, "worktree": {"list"}, "remote": {"-v", "show", "get-url"}}
 BRANCH_READ_ARGS = {"-a", "-r", "-v", "-vv", "--list", "--show-current", "--merged", "--no-merged", "--contains"}
 FIND_BAD_ARGS = {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"}
 OPS_SCRIPTS = {"post-result.sh", "finish-worker.sh"}
+# 상태 조회만 하는 하위 명령 (명령 → 허용 첫 인자)
+READ_SUBCMDS = {"launchctl": {"list", "print"}, "crontab": {"-l"}, "lms": {"ps", "ls", "status"}}
+GH_READ = {("auth", "status"), ("pr", "view"), ("pr", "list"), ("pr", "status"), ("pr", "diff"), ("pr", "checks"),
+           ("repo", "view"), ("run", "list"), ("run", "view")}
+PYTHON = re.compile(r"python(?:3(?:\.\d+)?)?")
 PUNCT = "();<>|&\n"
 # 스캐너가 쓰는 표지 문자 (원 명령에 있으면 거른다): 확장 안 되는 $·~, 리다이렉트 >, >>, <
 LIT_DOLLAR, LIT_TILDE, R_OUT, R_APPEND, R_IN = "\x01", "\x02", "\x03", "\x04", "\x05"
@@ -311,14 +316,24 @@ def safe_segment(words: list[str], ctx: RuleCtx) -> bool:
             ctx.vars[name] = ctx.expand(value, assign=True)
         return True
     head, args = plain[0], plain[1:]
+    exp = ctx.expand(head)
     ops = ctx.resolve(head) if "/" in head and ctx.orch_root else None  # 절대 경로·cd 뒤 상대 경로
     if ops and all(os.path.basename(p) in OPS_SCRIPTS and os.path.dirname(p) == os.path.join(ctx.orch_root, "bin")
                    for p in ops):
         return True
     if "ORCH_ROOT" not in ctx.vars and head in {f"{p}/bin/{s}" for p in ("$ORCH_ROOT", "${ORCH_ROOT}") for s in OPS_SCRIPTS}:
         return True
-    if head in ("python", "python3"):
+    if head in ("python", "python3") or exp and PYTHON.fullmatch(os.path.basename(exp)) \
+            and os.path.basename(os.path.dirname(os.path.dirname(exp))) == ".venv":  # 프로젝트 가상환경 python
         return bool(args) and (args[0] == "-c" or args[:2] in (["-m", "json.tool"], ["-m", "unittest"], ["-m", "pytest"]))
+    tool = os.path.basename(exp) if exp else ""
+    if tool in READ_SUBCMDS and (head == tool or tool == "lms" and exp == os.path.join(ctx.home, ".lmstudio/bin/lms")):
+        return bool(args) and args[0] in READ_SUBCMDS[tool]
+    if head == "gh":
+        return tuple(args[:2]) in GH_READ
+    if tool == "Godot" and "--headless" in args:  # 작업 폴더 프로젝트의 헤드리스 실행·테스트
+        i = args.index("--path") if "--path" in args else -1
+        return 0 <= i < len(args) - 1 and ctx.inside(args[i + 1], ctx.roots[:1])
     if head == "cd":
         ctx.cd([a for a in args if a not in ("-P", "-L")])
         return True

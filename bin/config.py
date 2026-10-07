@@ -11,7 +11,7 @@ SOURCE_ROOT = Path(__file__).resolve().parent.parent
 ROLES = ("상담역", "접수원", "작업자", "리뷰어", "비전")
 ENGINES = ("claude", "grok")
 TOOL_GATE_MODES = ("shadow", "enforce", "off")
-TOOL_GATE_DEFAULTS = {"mode": "shadow", "model": "typesafe/jev-1.13-20260917", "threshold": 0.85,
+TOOL_GATE_DEFAULTS = {"mode": "enforce", "model": "typesafe/jev-1.13-20260917", "threshold": 0.85,
                       "allowThreshold": 0.5, "notify": False, "reviewAt": {"jev": 50, "threads": 10}}
 
 

@@ -166,7 +166,7 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 (`ORCA_THREAD_ID` 없는 상시 세션·그록·자비스는 대상 아님). 규칙으로 바로 allow 하는 것: 읽기 전용 셸·git 조회, `git add`/`commit`
 (작업 폴더 안), `<ORCH_ROOT>/bin/post-result.sh`·`finish-worker.sh`(절대 경로·`$ORCH_ROOT`·앞서 대입한 변수·`cd <ORCH_ROOT> &&` 뒤 상대 경로),
 작업 폴더(`CLAUDE_PROJECT_DIR`, 없으면 훅 cwd)·세션 스크래치(`/private/tmp/claude-<uid>/<슬러그>/`, `/tmp/…`)로의 `>`·`>>`·`mkdir -p`,
-`<ORCH_ROOT>/runs/**/*.md` 덧붙이기(`>>`만), `until`/`while … ; do …; done` 대기 루프(안의 명령을 각각 검사, `sleep`·`pgrep` 허용). 따옴표를 따라가는 스캐너가 명령·프로세스 치환(작은따옴표 안, `` \` ``·`` \$( `` 이스케이프는 제외),
+`<ORCH_ROOT>/runs/**/*.md` 덧붙이기(`>>`만), `until`/`while … ; do …; done` 대기 루프(안의 명령을 각각 검사, `sleep`·`pgrep` 허용), 조회 전용 하위 명령(`launchctl list|print`·`crontab -l`·`lms ps|ls|status`·`gh auth status`·`gh pr view|list|…`·`git ls-remote` 등), `.venv/bin/python`의 `-c`·`-m pytest|unittest`, 작업 폴더를 `--path`로 준 `Godot --headless`. 따옴표를 따라가는 스캐너가 명령·프로세스 치환(작은따옴표 안, `` \` ``·`` \$( `` 이스케이프는 제외),
 따옴표 없는 heredoc 본문의 치환, 서브셸을 거르고(단 `$(date +형식)`은 허용),  같은 명령 앞쪽의 `NAME=값` 대입과 `cd`를 따라 경로를 펼친다(`..` 정규화,
 모르는 변수·glob·`~user`면 Jev). `cd` 뒤 cwd는 같은 `&&` 사슬 안에서만 새 경로로 보고, `;`·`||`·`|`·줄바꿈 뒤에는 cd 실패 때의 cwd도 함께 본다. `PATH`·`GIT_*`·`*PAGER` 같은 대입은 규칙 allow 하지 않는다.
 나머지는 OpenRouter Decisions API의 Jev(`toolGate.model`)에 State/Choice(allow·ask·deny)로 묻는다. State에 작업 폴더·스크래치 경로와
@@ -175,7 +175,7 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 `OPENROUTER_API_KEY=` 한 줄이며, 키 없음·3.5초 타임아웃·네트워크·응답 형식 오류는 allow(fail-open)하고 기록에 `error`를 남긴다.
 기록은 `state/tool-gate/<스레드>.jsonl`(ts·command 앞 300자·decision·verdict·confidence·ms·mode·source·error·qv).
 `qv`는 질문·규칙 버전(`QUESTION_VERSION`)이라 바꾸기 전후 기록을 가른다. `source`: rule·jev·fail-open·approval.
-`routes.json` `toolGate.mode`: `shadow`(기본, 판정·기록만 하고 훅은 즉시 반환 — 분리 자식이 처리), `enforce`, `off`.
+`routes.json` `toolGate.mode`: `enforce`(기본, 2026-10-07 전환), `shadow`(판정·기록만 하고 훅은 즉시 반환 — 분리 자식이 처리), `off`. 승인 요청이 과하면 `"shadow"`로 즉시 되돌린다.
 섀도 누적 집계는 `state/tool-gate/summary.json`이며, Jev 판정 수·마크 작업 수가 `toolGate.reviewAt`(기본 50건·10개)에
 처음 닿으면 운영 로그 채널에 소유자 멘션으로 검토 알림(판정 분포·확신도 미달·fail-open 수)을 한 번 올린다. 다시 받으려면 `summary.json`을 지운다.
 `summary.json`에 `"reviewChannel": "<스레드·채널 ID>"`를 넣으면 그쪽으로 보낸다(보관된 스레드도 글을 올리면 다시 열린다). 실패하면 운영 로그 채널.

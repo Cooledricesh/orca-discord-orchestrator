@@ -66,7 +66,11 @@ class ContextRuleTests(unittest.TestCase):
             "printf '## %s\\n' \"$(date +%H:%M)\" >> /orch/runs/p/$(date +%F).md",
             "cat >> /orch/runs/p/d.md <<EOF\n## $(date +%H:%M) x\nEOF",
             "until grep -q DONE x.log; do sleep 5; done; tail -3 x.log",
-            'while pgrep -f "a b" >/dev/null; do sleep 20; done; echo done']
+            'while pgrep -f "a b" >/dev/null; do sleep 20; done; echo done',
+            "launchctl list | grep orca", "launchctl print gui/501/ai.orca.jarvis", "crontab -l",
+            "~/.lmstudio/bin/lms ps", "L=~/.lmstudio/bin/lms; $L ls", "gh auth status", "gh pr view 3",
+            "git ls-remote --heads live", "/p/.venv/bin/python -m pytest -q", "/p/.venv/bin/python3.14 -c 'print(1)'",
+            f"G=/Apps/Godot.app/Contents/MacOS/Godot; $G --headless --path . -s res://tests/t.gd 2>&1 | tail"]
     UNSAFE = ['"$ORCH_ROOT/bin/post-result.sh" t ok "본문 `code` 끝"', f"cat > {S}/x <<EOF\n$(whoami)\nEOF",
               f"cat > {S}/x <<EOF\nhi", f"S={S}; echo x > $S/../../../etc/x", "mkdir -p /etc/x", "mkdir -p ~/x",
               "mkdir -m 777 x", "echo x > /orch/runs/proj/2026-10-02.md", "echo x >> /orch/runs/proj/a.sh",
@@ -76,12 +80,15 @@ class ContextRuleTests(unittest.TestCase):
               "ls # c\nrm -rf ~", "PATH=/tmp/x:$PATH; ls", "GIT_PAGER=sh git log", "echo x > $UNKNOWN/a",
               "echo x > ~root/a", "echo x &> /etc/x", "echo x >| /etc/passwd", "echo x >&/etc/passwd",
               'find ">" -delete', f"echo x > {S}/*.md", "mkdir -p $HOME/{a,b}", "( ls )", "cd /tmp; echo x > a",
-              "x=1 > /etc/x", "S=~/x; echo > $S", "cat a <> b", "ssh host ls", "kill 1", "launchctl list",
+              "x=1 > /etc/x", "S=~/x; echo > $S", "cat a <> b", "ssh host ls", "kill 1", "launchctl bootout gui/1/x", "launchctl load x",
               "npm install x", "git push", "rm -rf build",
               "echo $(date -s 0101)", "echo $(date +%F; rm x)", "cd /other && ./bin/post-result.sh a", "cd /orch; ./bin/post-result.sh a",
               "cd /orch && ls; ./bin/post-result.sh a", "cd /orch && ls || ./bin/post-result.sh a",
               "bin/post-result.sh a", "echo x > /orch/runs/p/$(date +%F).sh", "while true; do rm -rf x; done",
-              "until ls; do sleep 1; done | sh", "while; do ls; done", "done x"]
+              "until ls; do sleep 1; done | sh", "while; do ls; done", "done x",
+              "crontab -r", "crontab x", "/tmp/lms ps", "lms load m", "gh api -X DELETE x", "gh pr merge 3",
+              "/p/.venv/bin/python x.py", "/p/bin/python -c 1", "Godot --headless --path /other",
+              "Godot --path . -s x.gd", "Godot --headless"]
 
     def test_with_roots(self):
         for cmd in self.SAFE:
@@ -211,9 +218,9 @@ class OutputConfigTests(unittest.TestCase):
 
     def test_config(self):
         cfg = config.tool_gate({})
-        self.assertEqual((cfg["mode"], cfg["threshold"], cfg["notify"]), ("shadow", 0.85, False))
+        self.assertEqual((cfg["mode"], cfg["threshold"], cfg["notify"]), ("enforce", 0.85, False))
         bad = config.tool_gate({"toolGate": {"mode": "loud", "threshold": 2}})
-        self.assertEqual((bad["mode"], bad["threshold"]), ("shadow", 0.85))
+        self.assertEqual((bad["mode"], bad["threshold"]), ("enforce", 0.85))
         self.assertEqual(cfg["allowThreshold"], 0.5)
         self.assertEqual(config.tool_gate({"toolGate": {"allowThreshold": 0.6}})["allowThreshold"], 0.6)
         self.assertEqual(config.tool_gate({"toolGate": {"allowThreshold": 0}})["allowThreshold"], 0.5)
