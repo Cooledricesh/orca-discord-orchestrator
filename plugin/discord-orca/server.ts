@@ -31,12 +31,14 @@ import {
   type Message,
   type Attachment,
   type Interaction,
+  type ButtonInteraction,
 } from 'discord.js'
 import { randomBytes } from 'crypto'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
 import { homedir } from 'os'
 import { join, sep, dirname } from 'path'
 import { mentionsOtherBotOnly } from './gate-helpers.ts'
+import { GATE_BUTTON, gateApprovalsPath, gateOwner, recordGateClick } from './tool-gate-buttons.ts'
 
 const STATE_DIR = process.env.DISCORD_STATE_DIR ?? join(homedir(), '.claude', 'channels', 'discord')
 const ACCESS_FILE = join(STATE_DIR, 'access.json')
@@ -794,6 +796,11 @@ client.on('error', err => {
 // Security mirrors the text-reply path: allowFrom must contain the sender.
 client.on('interactionCreate', async (interaction: Interaction) => {
   if (!interaction.isButton()) return
+  const tg = GATE_BUTTON.exec(interaction.customId)
+  if (tg) {
+    await handleGateButton(interaction, tg[1] as 'allow' | 'deny', tg[2])
+    return
+  }
   const m = /^perm:(allow|deny|more):([a-km-z]{5})$/.exec(interaction.customId)
   if (!m) return
   const access = loadAccess()
@@ -849,6 +856,32 @@ client.on('interactionCreate', async (interaction: Interaction) => {
     .update({ content: `${interaction.message.content}\n\n${label}`, components: [] })
     .catch(() => {})
 })
+
+// 툴 게이트 확인 요청 버튼 (bin/tool-gate.py). 소유자가 이 작업 스레드에서 누른 것만 기록한다.
+async function handleGateButton(interaction: ButtonInteraction, behavior: 'allow' | 'deny', key: string) {
+  const path = gateApprovalsPath()
+  const owner = gateOwner()
+  if (!path || !owner || interaction.user.id !== owner || interaction.channelId !== process.env.ORCA_THREAD_ID) {
+    await interaction.reply({ content: '소유자만 누를 수 있습니다.', ephemeral: true }).catch(() => {})
+    return
+  }
+  let result
+  try {
+    result = recordGateClick(path, key, interaction.message.id, behavior)
+  } catch (e) {
+    process.stderr.write(`discord: tool-gate button failed: ${e}\n`)
+    await interaction.reply({ content: '기록 실패 — ✅ 반응으로 승인하세요.', ephemeral: true }).catch(() => {})
+    return
+  }
+  if (result === 'missing') {
+    await interaction.reply({ content: '이 요청은 더 이상 대기 중이 아닙니다.', ephemeral: true }).catch(() => {})
+    return
+  }
+  const label = result === 'approved' ? '✅ 승인됨 (60분). 스레드에 "진행" 이라고 쓰세요.' : '❌ 거부됨'
+  await interaction
+    .update({ content: `${interaction.message.content}\n\n${label}`, components: [] })
+    .catch(() => {})
+}
 
 client.on('messageCreate', msg => {
   handleInbound(msg).catch(e => process.stderr.write(`discord: handleInbound failed: ${e}\n`))

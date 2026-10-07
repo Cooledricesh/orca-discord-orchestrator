@@ -635,11 +635,20 @@ def request_approval(path: str, thread: str, cmd: str, owner: str, rest, now: fl
         return False
     short = re.sub(r"\s*\n\s*", " ", cmd[:150]).replace("`", "'")
     msg = rest("POST", f"/channels/{thread}/messages", {
-        "content": f"🛡 확인 필요 (<@{owner}>): `{short}`\n허용하려면 이 메시지에 {APPROVE_EMOJI} 를 누르고 스레드에 \"진행\" 이라고 쓰세요.",
-        "allowed_mentions": {"users": [owner]}})
+        "content": f"🛡 확인 필요 (<@{owner}>): `{short}`\n허용하려면 아래 {APPROVE_EMOJI} 를 누르고 스레드에 \"진행\" 이라고 쓰세요.",
+        "allowed_mentions": {"users": [owner]},
+        # 플러그인(discord-orca tool-gate-buttons.ts)이 소유자 클릭을 approvals.json 에 기록한다. ✅ 반응도 그대로 유효.
+        "components": [{"type": 1, "components": [
+            {"type": 2, "style": 3, "label": "승인 (60분)", "emoji": {"name": APPROVE_EMOJI}, "custom_id": f"tgate:allow:{key}"},
+            {"type": 2, "style": 4, "label": "거부", "custom_id": f"tgate:deny:{key}"}]}]})
     if not isinstance(msg, dict) or not msg.get("id"):
         return False
-    data[key] = {"messageId": str(msg["id"]), "command": cmd[:300], "requested": int(now), "approved": None}
+    # 소유자가 탭만 하도록 봇이 ✅ 를 먼저 단다. 실패해도 게시는 유효하다 (기록만 남긴다).
+    try:
+        reacted = rest("PUT", f"/channels/{thread}/messages/{msg['id']}/reactions/{urllib.parse.quote(APPROVE_EMOJI)}/@me") is not None
+    except Exception:  # noqa: BLE001
+        reacted = False
+    data[key] = {"messageId": str(msg["id"]), "command": cmd[:300], "requested": int(now), "approved": None, "reacted": reacted}
     save_approvals(path, data)
     return True
 
