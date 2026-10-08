@@ -8,12 +8,12 @@
   (allow 는 확신도 < allowThreshold, deny 는 < threshold 면 ask 로 내린다).
 - 키 없음·타임아웃·네트워크·응답 형식 오류는 fail-open(allow) 하고 기록에 error 를 남긴다.
 - 모드: routes.json toolGate.mode — shadow(분리 자식이 판정·기록만, 훅은 즉시 반환) /
-  enforce(기본. 동기 판정, deny 는 차단, ask 는 차단 + 스레드에 ✅ 확인 요청. 소유자가 ✅ 를 누르면 60분간 같은 명령 allow) / off.
-기록: $STATE_DIR_ROOT/tool-gate/<threadId>.jsonl (qv=질문 버전). 승인: tool-gate/<threadId>.approvals.json.
+  enforce(동기 판정, deny·ask 는 차단) / off. 기본은 shadow.
+기록: $STATE_DIR_ROOT/tool-gate/<threadId>.jsonl (qv=질문 버전).
 누적 집계: tool-gate/summary.json — 섀도에서 Jev 판정 수·스레드 수가
 toolGate.reviewAt(기본 50건·10개)에 처음 닿으면 운영 로그 채널에 소유자 멘션으로 검토 알림을 한 번 올린다. 키: config.openrouter_key_file (routes.json openrouterKeyFile > $BOTS_DIR/openrouter.env, OPENROUTER_API_KEY=).
 """
-import fcntl, hashlib, json, math, os, re, shlex, sys, threading, time, urllib.parse, urllib.request
+import fcntl, json, math, os, re, shlex, sys, threading, time, urllib.request
 from datetime import datetime
 
 sys.dont_write_bytecode = True
@@ -21,10 +21,6 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
 API_URL = "https://openrouter.ai/api/alpha/decisions"
 JEV_TIMEOUT_S = 3.5   # 훅 timeout 5초 안: 파이썬 기동·기록 여유 포함
-GATE_BUDGET_S = 4.5   # 훅 한 번의 전체 예산 (Discord 호출은 남은 만큼만)
-DISCORD_TIMEOUT_S = 1.5
-APPROVAL_TTL_S = 3600
-APPROVE_EMOJI = "✅"
 CHOICES = ("allow", "ask", "deny")
 QUESTION_VERSION = "bash-gate-v4-20261007"
 
@@ -445,24 +441,16 @@ def call_jev(body: dict, key: str, timeout: float = JEV_TIMEOUT_S, opener=None) 
 
 
 def evaluate(cmd: str, cwd: str, cfg: dict, key_file: str, orch_root: str = "", jev=None,
-             worktree: str = "", approval=None) -> dict:
-    """판정 한 건. 항상 dict 를 돌려주고 예외를 올리지 않는다.
-    approval: 규칙 다음·Jev 전에 부르는 승인 조회 (enforce). "approved" 면 allow, "pending" 이면 Jev 없이 ask."""
+             worktree: str = "") -> dict:
+    """판정 한 건. 항상 dict 를 돌려주고 예외를 올리지 않는다."""
     started = time.monotonic()
     rec = {"verdict": None, "confidence": None, "source": "rule", "error": None}
     try:
-        state = None
         if safe_by_rule(cmd, orch_root, write_roots(worktree), cwd if os.path.isabs(cwd or "") else None):
             rec["decision"] = "allow"
-        elif approval:
-            state = approval()
-    except Exception:  # noqa: BLE001 — 규칙·승인 조회 오류는 Jev 로
-        state = None
-    if "decision" in rec:
+    except Exception:  # noqa: BLE001 — 규칙 오류는 Jev 로
         pass
-    elif state in ("approved", "pending"):
-        rec.update(decision="allow" if state == "approved" else "ask", source="approval", approval=state)
-    else:
+    if "decision" not in rec:
         key = load_key(key_file)
         if not key:
             rec.update(decision="allow", source="fail-open", error="missing_key")
@@ -485,7 +473,7 @@ def gate_config() -> dict:
     from config import TOOL_GATE_DEFAULTS, load_routes, openrouter_key_file, tool_gate
     try:
         data = load_routes()
-        return {**tool_gate(data), "keyFile": openrouter_key_file(data), "ownerUserId": str(data.get("ownerUserId") or "")}
+        return {**tool_gate(data), "keyFile": openrouter_key_file(data)}
     except Exception:
         return dict(TOOL_GATE_DEFAULTS)  # 설정 없음·형식 오류여도 기본(shadow)으로 기록은 남긴다
 
@@ -580,92 +568,11 @@ def notify(thread: str, rec: dict) -> None:
                      {"content": f"🛡 게이트(섀도) {rec['decision']}{conf} · `{cmd}`", "allowed_mentions": {"parse": []}})
 
 
-def approvals_path(state_root: str, thread: str) -> str:
-    return os.path.join(state_root, "tool-gate", f"{thread}.approvals.json")
-
-
-def load_approvals(path: str) -> dict:
-    try:
-        with open(path) as stream:
-            data = json.load(stream)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def save_approvals(path: str, data: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as out:
-        json.dump(data, out, ensure_ascii=False)
-    os.replace(tmp, path)
-
-
-def command_key(cmd: str) -> str:
-    return hashlib.sha256(cmd.encode()).hexdigest()
-
-
-def check_approval(path: str, thread: str, cmd: str, owner: str, rest, now: float | None = None) -> str | None:
-    """"approved"(60분 안 승인·방금 소유자 ✅) / "pending"(요청 올림, 승인 없음) / None(기록 없음·만료).
-    반응 조회(GET)는 요청 기록이 있을 때만."""
-    now = time.time() if now is None else now
-    data = load_approvals(path)
-    entry = data.get(command_key(cmd))
-    if not isinstance(entry, dict) or not entry.get("messageId"):
-        return None
-    if entry.get("approved"):
-        return "approved" if now - entry["approved"] < APPROVAL_TTL_S else None
-    users = rest("GET", f"/channels/{thread}/messages/{entry['messageId']}/reactions/{urllib.parse.quote(APPROVE_EMOJI)}") if owner else None
-    if isinstance(users, list) and any(isinstance(u, dict) and str(u.get("id")) == owner for u in users):
-        entry["approved"] = int(now)
-        save_approvals(path, data)
-        return "approved"
-    return "pending"
-
-
-def request_approval(path: str, thread: str, cmd: str, owner: str, rest, now: float | None = None) -> bool:
-    """스레드에 ✅ 확인 요청을 한 번 올리고 기록한다. 이미 대기 중이면 다시 올리지 않는다. 올렸거나 대기 중이면 True."""
-    now = time.time() if now is None else now
-    data = load_approvals(path)
-    key = command_key(cmd)
-    entry = data.get(key)
-    if isinstance(entry, dict) and entry.get("messageId") and not entry.get("approved"):
-        return True
-    if not owner:
-        return False
-    short = re.sub(r"\s*\n\s*", " ", cmd[:150]).replace("`", "'")
-    msg = rest("POST", f"/channels/{thread}/messages", {
-        "content": f"🛡 확인 필요 (<@{owner}>): `{short}`\n허용하려면 이 메시지에 {APPROVE_EMOJI} 를 누르고 스레드에 \"진행\" 이라고 쓰세요.",
-        "allowed_mentions": {"users": [owner]}})
-    if not isinstance(msg, dict) or not msg.get("id"):
-        return False
-    data[key] = {"messageId": str(msg["id"]), "command": cmd[:300], "requested": int(now), "approved": None}
-    save_approvals(path, data)
-    return True
-
-
-def gate_rest(started: float):
-    """(method, ep, body) → 응답|None. 토큰은 처음 쓸 때 읽고, timeout 은 훅 예산에서 남은 만큼."""
-    box: dict = {}
-
-    def call(method: str, ep: str, body: dict | None = None):
-        if "api" not in box:
-            box["token"], box["api"] = discord_api()
-        if not box["token"]:
-            return None
-        left = GATE_BUDGET_S - (time.monotonic() - started)
-        return box["api"](box["token"], method, ep, body, timeout=max(0.3, min(DISCORD_TIMEOUT_S, left)))
-    return call
-
-
 def enforce_output(rec: dict) -> dict | None:
     if rec["decision"] == "allow":
         return None
     reason = {"deny": "툴 게이트가 이 명령을 차단했다. 다른 방법을 찾거나 소유자에게 스레드로 알린다.",
               "ask": "툴 게이트: 되돌리기 어려운 명령이다. 실행하지 말고 스레드에 소유자 확인을 요청한 뒤 답을 기다린다."}[rec["decision"]]
-    if rec["decision"] == "ask" and rec.get("approval") in ("requested", "pending"):
-        reason = ("툴 게이트: 되돌리기 어려운 명령이라 소유자 확인이 필요하다. 스레드에 확인 요청을 올렸다. 실행하지 말고 기다려라. "
-                  "소유자가 승인했다고 하면 같은 명령을 그대로 다시 실행한다.")
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                    "permissionDecisionReason": reason}}
 
@@ -674,23 +581,12 @@ def state_dir(env) -> str:
     return env.get("STATE_DIR_ROOT") or os.path.join(env.get("ORCH_ROOT") or os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "state")
 
 
-def run_gate(ev: dict, thread: str, cfg: dict, env: dict, rest=None) -> dict:
-    """rest: Discord REST (method, ep, body) — 테스트 주입용. enforce 에서만 승인 조회·요청을 한다."""
-    started = time.monotonic()
+def run_gate(ev: dict, thread: str, cfg: dict, env: dict) -> dict:
     cmd = (ev.get("tool_input") or {}).get("command") or ""
     bots = env.get("BOTS_DIR") or os.path.expanduser("~/.claude/channels/bots")
     worktree = env.get("CLAUDE_PROJECT_DIR") or ev.get("cwd") or ""
-    enforce, owner = cfg["mode"] == "enforce", cfg.get("ownerUserId") or ""
-    apath = approvals_path(state_dir(env), thread)
-    rest = rest or gate_rest(started)
     rec = evaluate(cmd, ev.get("cwd") or "", cfg, cfg.get("keyFile") or os.path.join(bots, "openrouter.env"), env.get("ORCH_ROOT", ""),
-                   worktree=worktree, approval=(lambda: check_approval(apath, thread, cmd, owner, rest)) if enforce else None)
-    if enforce and rec["decision"] == "ask" and rec["source"] == "jev":  # deny 는 승인 대상 아님
-        try:
-            if request_approval(apath, thread, cmd, owner, rest):
-                rec["approval"] = "requested"
-        except Exception:  # noqa: BLE001 — 요청 실패면 예전처럼 차단만
-            pass
+                   worktree=worktree)
     rec = {"ts": datetime.now().astimezone().isoformat(timespec="seconds"), "command": cmd[:300],
            "mode": cfg["mode"], "qv": QUESTION_VERSION, **rec}
     try:

@@ -174,8 +174,9 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 최종 판정은 코드가 한다: allow는 확신도 `allowThreshold`(기본 0.5), deny는 `threshold`(기본 0.85) 미만이면 ask. 키는 공통 OpenRouter 키 파일의
 `OPENROUTER_API_KEY=` 한 줄이며, 키 없음·3.5초 타임아웃·네트워크·응답 형식 오류는 allow(fail-open)하고 기록에 `error`를 남긴다.
 기록은 `state/tool-gate/<스레드>.jsonl`(ts·command 앞 300자·decision·verdict·confidence·ms·mode·source·error·qv).
-`qv`는 질문·규칙 버전(`QUESTION_VERSION`)이라 바꾸기 전후 기록을 가른다. `source`: rule·jev·fail-open·approval.
-`routes.json` `toolGate.mode`: `enforce`(기본, 2026-10-07 전환), `shadow`(판정·기록만 하고 훅은 즉시 반환 — 분리 자식이 처리), `off`. 승인 요청이 과하면 `"shadow"`로 즉시 되돌린다.
+`qv`는 질문·규칙 버전(`QUESTION_VERSION`)이라 바꾸기 전후 기록을 가른다. `source`: rule·jev·fail-open.
+`routes.json` `toolGate.mode`: `shadow`(기본 — 판정·기록만 하고 훅은 즉시 반환, 분리 자식이 처리), `enforce`, `off`.
+2026-10-08 소유자 지시로 enforce 기본과 ✅ 승인 흐름을 없앴다(ask 남발로 작업이 멈춤). 다시 켜려면 섀도 기록으로 부당 ask를 먼저 줄인다.
 섀도 누적 집계는 `state/tool-gate/summary.json`이며, Jev 판정 수·마크 작업 수가 `toolGate.reviewAt`(기본 50건·10개)에
 처음 닿으면 운영 로그 채널에 소유자 멘션으로 검토 알림(판정 분포·확신도 미달·fail-open 수)을 한 번 올린다. 다시 받으려면 `summary.json`을 지운다.
 `summary.json`에 `"reviewChannel": "<스레드·채널 ID>"`를 넣으면 그쪽으로 보낸다(보관된 스레드도 글을 올리면 다시 열린다). 실패하면 운영 로그 채널.
@@ -183,14 +184,8 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 **재측정**: 규칙·질문을 바꾼 뒤에는 `summary.json`을 보관(`summary-<날짜>.json`)하고 새로 집계한다(`qv`로 새 기록만 본다).
 재알림 후 부당 ask 비율이 10% 아래면 enforce.
 **enforce 전환**: 섀도 기록에서 오판(`source=jev`인데 부당한 ask/deny)을 먼저 확인한 뒤 `toolGate.mode`를 `"enforce"`로 바꾼다.
-훅이 매번 설정을 읽으므로 재시작은 필요 없다. enforce는 동기 판정이며 deny는 차단(승인 불가), ask는 차단 + 확인 요청이다
+훅이 매번 설정을 읽으므로 재시작은 필요 없다. enforce는 동기 판정이며 deny·ask 모두 차단만 한다(승인 요청 없음).
 (Claude의 `ask` 결정은 터미널 확인을 띄워 마크가 멈추므로 쓰지 않는다).
-**승인 흐름 (enforce)**: Jev ask면 게이트가 마크 봇으로 스레드에 `` 🛡 확인 필요 (@소유자): `명령` ``을 올리고
-`state/tool-gate/<스레드>.approvals.json`에 명령 전체의 sha256 키로 `{messageId, command, requested, approved}`를 남긴 뒤,
-"기다렸다가 승인되면 같은 명령을 그대로 다시 실행하라"는 사유로 막는다. 소유자(`ownerUserId`)가 그 메시지에 ✅를 누르고 스레드에
-"진행"이라고 쓰면, 마크의 재시도 때 게이트가 반응을 조회해 승인으로 기록하고 allow한다. 승인은 60분 유효(지나면 다시 요청).
-대기 중 재시도는 Jev 없이 막고 메시지를 다시 올리지 않는다. 승인 조회는 규칙 다음·Jev 전, Discord 호출은 1.5초 이내.
-게시 실패(토큰 없음 등)면 요청 없이 막기만 한다. 섀도에서는 승인 메시지를 올리지 않는다.
 
 ## 자동 실행 등록
 
