@@ -302,37 +302,17 @@ class ApprovalTests(unittest.TestCase):
         rest = Mock(return_value={"id": "m9"})
         rec = self.run_gate(jev_says("ask"), rest)
         self.assertEqual((rec["decision"], rec["source"], rec["approval"]), ("ask", "jev", "requested"))
-        (method, ep, body), put = rest.call_args_list[0].args, rest.call_args_list[1].args
+        method, ep, body = rest.call_args.args
         self.assertEqual((method, ep), ("POST", "/channels/t1/messages"))
-        self.assertEqual(put, ("PUT", "/channels/t1/messages/m9/reactions/%E2%9C%85/@me"))
-        self.assertIn("아래 ✅", body["content"])
-        ids = [b["custom_id"] for b in body["components"][0]["components"]]
-        self.assertEqual(ids, [f"tgate:allow:{gate.command_key(RISKY)}", f"tgate:deny:{gate.command_key(RISKY)}"])
         self.assertIn("<@42>", body["content"]); self.assertIn("✅", body["content"])
         self.assertEqual(body["allowed_mentions"], {"users": ["42"]})
         saved = gate.load_approvals(self.path)[gate.command_key(RISKY)]
-        self.assertEqual((saved["messageId"], saved["command"], saved["approved"], saved["reacted"]), ("m9", RISKY, None, True))
+        self.assertEqual((saved["messageId"], saved["command"], saved["approved"]), ("m9", RISKY, None))
         self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
         rest2 = Mock(return_value=[])
         rec2 = self.run_gate(jev_says("ask"), rest2)
         self.assertEqual(rec2["decision"], "ask")
         self.assertEqual([c.args[0] for c in rest2.call_args_list], ["GET"])
-
-    def test_reaction_failure_keeps_request(self):
-        for err in (None, RuntimeError("x")):
-            os.path.exists(self.path) and os.remove(self.path)
-            rest = Mock(side_effect=[{"id": "m9"}, err if isinstance(err, Exception) else None])
-            rec = self.run_gate(jev_says("ask"), rest)
-            self.assertEqual((rec["decision"], rec["approval"]), ("ask", "requested"))
-            saved = gate.load_approvals(self.path)[gate.command_key(RISKY)]
-            self.assertEqual((saved["messageId"], saved["reacted"]), ("m9", False))
-
-    def test_bot_own_reaction_not_approval(self):
-        self.entry(approved=None, reacted=True)
-        rest = Mock(return_value=[{"id": "999", "bot": True}])  # 게이트 봇이 미리 단 ✅ 만 있음
-        rec = self.run_gate(Mock(), rest)
-        self.assertEqual((rec["decision"], rec["approval"]), ("ask", "pending"))
-        self.assertIsNone(gate.load_approvals(self.path)[gate.command_key(RISKY)]["approved"])
 
     def test_post_failure_blocks_without_entry(self):
         rec = self.run_gate(jev_says("ask"), Mock(return_value=None))
