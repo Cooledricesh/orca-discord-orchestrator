@@ -19,12 +19,16 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import urllib.request
+from datetime import datetime
 
 from config import load_routes, root_path, routes_path, runtime_paths, role_enabled, worker_entries
 
 SERVICES = ("상담역", "접수원", "리뷰어")
 JOBS = ("sweep", "leads-check", "접수원-restart", "jarvis")
+MCP_LOG_ROOTS = (Path.home() / "Library/Caches/claude-cli-nodejs", Path.home() / ".cache/claude-cli-nodejs")
+CHANNEL_WAIT_S = 90
 
 
 def directory():
@@ -265,6 +269,49 @@ def reload_launchd(name, backup):
         raise RuntimeError(f"{label} 재등록 검증 실패; 이전 설정 복원={'성공' if restored else '실패'}") from None
 
 
+def channel_event(cwd, since):
+    """since 이후 cwd 세션의 discord-orca 채널 등록 로그: (registered|skipped, epoch) 또는 None."""
+    want = unicodedata.normalize("NFC", str(cwd))
+    found = None
+    roots = [Path(os.environ["ORCH_MCP_LOG_ROOT"])] if os.environ.get("ORCH_MCP_LOG_ROOT") else MCP_LOG_ROOTS
+    for base in roots:
+        for path in base.glob("*/mcp-logs-plugin-discord-orca-discord/*.jsonl"):
+            try:
+                if path.stat().st_mtime < since:
+                    continue
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                if "Channel notifications" not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    at = datetime.fromisoformat(entry["timestamp"].replace("Z", "+00:00")).timestamp()
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue
+                if at < since or unicodedata.normalize("NFC", str(entry.get("cwd", ""))) != want:
+                    continue
+                kind = "registered" if "registered" in entry.get("debug", "") else "skipped"
+                if found is None or at > found[1]:
+                    found = (kind, at)
+    return found
+
+
+def check_channel(role, since):
+    """재시작한 상담역·접수원이 Discord 메시지를 실제로 받도록 채널 등록됐는지 확인한다."""
+    deadline = time.time() + CHANNEL_WAIT_S
+    while True:
+        event = channel_event(root_path() / "sessions" / role, since)
+        if event and event[0] == "registered":
+            return f"{role}: 채널 수신 등록 확인 ({time.strftime('%H:%M:%S', time.localtime(event[1]))})"
+        if event:
+            raise RuntimeError(f"{role} 채널 수신 등록 거부(skipped) — 메시지를 받지 못합니다")
+        if time.time() >= deadline:
+            raise RuntimeError(f"{role} 채널 수신 등록 로그가 {CHANNEL_WAIT_S}초 안에 없습니다")
+        time.sleep(2)
+
+
 def notify(job):
     if not job.get("chat"):
         return
@@ -315,9 +362,17 @@ def execute(code):
                         step("dependencies:" + folder, lambda folder=folder: run(["bun", "install", "--ignore-scripts"], cwd=root_path() / folder))
             for name in job["launchd"]:
                 step("launchd:" + name, lambda name=name: reload_launchd(name, job_path(code).parent / "backup"))
+            checks = []
             for role in job["services"]:
+                if "restart:" + role not in job["completed"]:
+                    job.setdefault("restartedAt", {})[role] = time.time()
                 step("restart:" + role, lambda role=role: run(["zsh", root_path() / "bin/model-restart.sh", role], timeout=240))
-            job.update(status="done", result="지정한 운영 변경과 대상 서비스 재시작을 확인했습니다. 실제 모델 응답 성공 여부는 별도입니다.")
+                if role == "리뷰어":
+                    checks.append("리뷰어: 자비스 서버 새 프로세스 확인")
+                else:
+                    job["phase"] = "channel:" + role
+                    checks.append(check_channel(role, job.get("restartedAt", {}).get(role, 0)))
+            job.update(status="done", result="\n".join(checks) or "재시작 대상 없음")
         except Exception as exc:
             job.update(status="failed", result=f"{job.get('phase', 'preflight')} 실패: {exc}")
         job["finished"] = time.time()

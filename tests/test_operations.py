@@ -25,7 +25,8 @@ class OperationsTests(unittest.TestCase):
         self.root.mkdir()
         self.source = self.area / "task worktree"
         self.env = patch.dict(os.environ, {"ORCH_ROOT": str(self.root), "ROUTES_FILE": str(self.root / "routes.json"),
-                                          "STATE_DIR_ROOT": str(self.root / "state")})
+                                          "STATE_DIR_ROOT": str(self.root / "state"),
+                                          "ORCH_MCP_LOG_ROOT": str(self.area / "cache")})
         self.env.start()
         self.git("init", "-b", "main")
         self.git("config", "user.email", "test@example.invalid")
@@ -33,7 +34,13 @@ class OperationsTests(unittest.TestCase):
         (self.root / ".gitignore").write_text("state/\nroutes.json\n")
         (self.root / "file.txt").write_text("baseline\n")
         (self.root / "bin").mkdir()
-        (self.root / "bin/model-restart.sh").write_text('print -r -- "$1" >> "$ORCH_ROOT/state/restarted"\n')
+        # 가짜 재시작: 재시작한 세션의 채널 등록 로그도 남긴다 (detached 실행은 patch 가 안 닿으므로 실제 check_channel 이 읽는다)
+        (self.root / "bin/model-restart.sh").write_text(
+            'print -r -- "$1" >> "$ORCH_ROOT/state/restarted"\n'
+            'mkdir -p "$ORCH_MCP_LOG_ROOT/s/mcp-logs-plugin-discord-orca-discord"\n'
+            'python3 -c \'import json,sys,datetime;print(json.dumps({"debug":"Channel notifications registered","cwd":sys.argv[1],'
+            '"timestamp":datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z")}))\' '
+            '"$ORCH_ROOT/sessions/$1" >> "$ORCH_MCP_LOG_ROOT/s/mcp-logs-plugin-discord-orca-discord/log.jsonl"\n')
         self.git("add", ".")
         self.git("commit", "-qm", "baseline")
         self.base = self.git("rev-parse", "HEAD")
@@ -47,8 +54,11 @@ class OperationsTests(unittest.TestCase):
         (folder / (THREAD + ".json")).write_text(json.dumps({"channelId": CHANNEL, "path": str(self.source), "bot": "마크1"}))
         self.notification = patch.object(ops, "notify")
         self.notification.start()
+        self.channel = patch.object(ops, "check_channel", side_effect=lambda role, since: f"{role}: ok")
+        self.channel.start()
 
     def tearDown(self):
+        self.channel.stop()
         self.notification.stop()
         self.env.stop()
         self.temp.cleanup()
@@ -166,6 +176,33 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(result["status"], "done")
         self.assertEqual(self.git("rev-parse", "HEAD"), job["target"])
         self.assertEqual(self.git("rev-parse", "refs/operations/" + job["id"]), self.base)
+
+    def test_channel_event_reads_latest_registration_for_session_cwd(self):
+        logs = self.area / "cache/-x-sessions/mcp-logs-plugin-discord-orca-discord"
+        logs.mkdir(parents=True)
+        cwd = self.root / "sessions/상담역"
+        def entry(ts, msg, where=cwd):
+            return json.dumps({"debug": msg, "timestamp": ts, "cwd": str(where)})
+        (logs / "a.jsonl").write_text("\n".join([
+            entry("2020-01-01T00:00:00.000Z", "Channel notifications registered"),
+            entry("2030-01-01T00:00:00.000Z", "Channel notifications registered", self.root / "sessions/접수원"),
+            entry("2030-01-01T00:00:01.000Z", "Channel notifications skipped: not in --channels list"),
+        ]))
+        since = time.mktime((2025, 1, 1, 0, 0, 0, 0, 0, -1))
+        os.utime(logs / "a.jsonl", (since + 10, since + 10))
+        with patch.dict(os.environ, {"ORCH_MCP_LOG_ROOT": str(self.area / "cache")}):
+            self.assertEqual(ops.channel_event(cwd, since)[0], "skipped")
+            self.assertEqual(ops.channel_event(self.root / "sessions/접수원", since)[0], "registered")
+            self.assertIsNone(ops.channel_event(self.root / "sessions/리뷰어", since))
+
+    def test_unregistered_channel_after_restart_fails_job(self):
+        self.change("bin/lib.sh")
+        self.channel.stop()
+        with patch.object(ops, "check_channel", side_effect=RuntimeError("상담역 채널 수신 등록 거부(skipped)")):
+            result, _ = self.execute(ops.plan(THREAD))
+        self.channel.start()
+        self.assertEqual(result["status"], "failed")
+        self.assertIn("channel:상담역", result["result"])
 
     def test_restart_failure_retains_promoted_state_and_retry_skips_verify(self):
         self.change("sessions/상담역/CLAUDE.md", "new role")
