@@ -114,11 +114,11 @@ Claude 봇은 Claude 모델만, 그록 봇은 `grok models` 목록의 모델만,
 
 ### 접수 난이도 라우팅 (Jev)
 
-`spawn-worker.sh`는 `--model`/`--effort`가 없고 claude 엔진의 새 작업이면 `bin/classify-request.py`로 요청 본문과 프로젝트 이름만 Jev(`typesafe/jev-1.13-20260917`, OpenRouter)에 보내 `simple|standard|hard`를 받는다. 매핑은 `routes.json`의 `jevRouting`(없으면 내장 기본값: simple→sonnet/medium, standard→`models.작업자`, hard→fable/high, `threshold` 0.85, `timeoutSec` 3, `enabled`)이다. 우선순위는 사용자 명시(해피의 `--model`/`--effort`) > 봇 항목 model/effort > Jev > 엔진 기본값이며 Grok 엔진·재개는 분류하지 않는다. 키(`OPENROUTER_API_KEY` 환경변수 > 공통 OpenRouter 키 파일, 아래) 없음·API 실패·타임아웃·확신도 미달은 기본값으로 스폰한다. 등록부에 `routeLevel`·`routeConfidence`·`routeSource`(user|jev|default)를 남기고 대기열 재시도는 이 판정을 그대로 쓴다. 배정 표시는 `(opus/medium · 자동|지정|기본)`. 확인은 `spawn-worker.sh <채널> <스레드> --request-file <f> --dry-run`의 `model=… source=…` 줄과 stderr `난이도 분류:` 줄(`reason=`)로 한다.
+`spawn-worker.sh`는 `--model`/`--effort`가 없고 claude 엔진의 새 작업이면 `bin/classify-request.py`로 요청 본문·프로젝트 이름·스레드 제목(본문에 없을 때)만 Jev(`typesafe/jev-1.13-20260917`, OpenRouter)에 보내 `simple|standard|hard`를 받는다. 매핑은 `routes.json`의 `jevRouting`(없으면 내장 기본값: simple→sonnet/medium, standard→`models.작업자`, hard→fable/high, `threshold` 0.85, 단계별 기준 `levelThresholds`(기본 hard 0.5 — 어려운 일은 낮은 확신도에도 올리고, 내리는 쪽은 0.85 유지), `timeoutSec` 3, `enabled`)이다. 우선순위는 사용자 명시(해피의 `--model`/`--effort`) > 봇 항목 model/effort > Jev > 엔진 기본값이며 Grok 엔진·재개는 분류하지 않는다. 키(`OPENROUTER_API_KEY` 환경변수 > 공통 OpenRouter 키 파일, 아래) 없음·API 실패·타임아웃·확신도 미달은 기본값으로 스폰한다. 등록부에 `routeLevel`·`routeConfidence`·`routeSource`(user|jev|default)를 남기고 대기열 재시도는 이 판정을 그대로 쓴다. 배정 표시는 `(opus/medium · 자동|지정|기본)`. 확인은 `spawn-worker.sh <채널> <스레드> --request-file <f> --dry-run`의 `model=… source=…` 줄과 stderr `난이도 분류:` 줄(`reason=`)로 한다.
 
 ### OpenRouter 키 (공통)
 
-OpenRouter를 쓰는 기능(Jev 라우팅·툴 게이트, 이후 추가분도)은 `config.openrouter_key_file(s)`로 키 파일을 찾는다. 순서는 `routes.json` 최상위 `openrouterKeyFile`(예: `~/.hermes/.env`처럼 다른 에이전트가 쓰는 env 파일 경로) → `$BOTS_DIR/openrouter.env`. 키 값을 복사하거나 출력하지 않고 경로만 둔다. 원본 파일의 키가 바뀌면 여기도 함께 바뀌고 사용량은 같은 계정에 합산된다.
+OpenRouter를 쓰는 기능(Jev 라우팅, 이후 추가분도)은 `config.openrouter_key_file(s)`로 키 파일을 찾는다. 순서는 `routes.json` 최상위 `openrouterKeyFile`(예: `~/.hermes/.env`처럼 다른 에이전트가 쓰는 env 파일 경로) → `$BOTS_DIR/openrouter.env`. 키 값을 복사하거나 출력하지 않고 경로만 둔다. 원본 파일의 키가 바뀌면 여기도 함께 바뀌고 사용량은 같은 계정에 합산된다.
 
 ### 마크 서브에이전트 모델 티어
 
@@ -159,33 +159,6 @@ Claude 봇(프라이데이·해피·마크)은 `templates/progress-settings.json
 `/hooks`에서 `StopFailure`에 `progress-hook.py`가 등록되었는지 확인한다.
 대화를 유지하며 적용할 때는 해당 세션 cwd의 `.claude/settings.local.json`에 같은 훅을 병합할 수 있다.
 기존 설정을 덮어쓰지 않는다.
-
-## 툴 게이트 (Jev, 마크 Bash)
-
-`templates/progress-settings.json`의 PreToolUse(matcher `Bash`)로 `bin/tool-gate.py`가 마크의 Bash 호출마다 돈다
-(`ORCA_THREAD_ID` 없는 상시 세션·그록·자비스는 대상 아님). 규칙으로 바로 allow 하는 것: 읽기 전용 셸·git 조회, `git add`/`commit`
-(작업 폴더 안), `<ORCH_ROOT>/bin/post-result.sh`·`finish-worker.sh`(절대 경로·`$ORCH_ROOT`·앞서 대입한 변수·`cd <ORCH_ROOT> &&` 뒤 상대 경로),
-작업 폴더(`CLAUDE_PROJECT_DIR`, 없으면 훅 cwd)·세션 스크래치(`/private/tmp/claude-<uid>/<슬러그>/`, `/tmp/…`)로의 `>`·`>>`·`mkdir -p`,
-`<ORCH_ROOT>/runs/**/*.md` 덧붙이기(`>>`만), `until`/`while … ; do …; done` 대기 루프(안의 명령을 각각 검사, `sleep`·`pgrep` 허용), 조회 전용 하위 명령(`launchctl list|print`·`crontab -l`·`lms ps|ls|status`·`gh auth status`·`gh pr view|list|…`·`git ls-remote` 등), `.venv/bin/python`의 `-c`·`-m pytest|unittest`, 작업 폴더를 `--path`로 준 `Godot --headless`. 따옴표를 따라가는 스캐너가 명령·프로세스 치환(작은따옴표 안, `` \` ``·`` \$( `` 이스케이프는 제외),
-따옴표 없는 heredoc 본문의 치환, 서브셸을 거르고(단 `$(date +형식)`은 허용),  같은 명령 앞쪽의 `NAME=값` 대입과 `cd`를 따라 경로를 펼친다(`..` 정규화,
-모르는 변수·glob·`~user`면 Jev). `cd` 뒤 cwd는 같은 `&&` 사슬 안에서만 새 경로로 보고, `;`·`||`·`|`·줄바꿈 뒤에는 cd 실패 때의 cwd도 함께 본다. `PATH`·`GIT_*`·`*PAGER` 같은 대입은 규칙 allow 하지 않는다.
-나머지는 OpenRouter Decisions API의 Jev(`toolGate.model`)에 State/Choice(allow·ask·deny)로 묻는다. State에 작업 폴더·스크래치 경로와
-"runs 로그 덧붙이기·post-result/finish-worker 호출은 필수 보고 절차"를 넣는다.
-최종 판정은 코드가 한다: allow는 확신도 `allowThreshold`(기본 0.5), deny는 `threshold`(기본 0.85) 미만이면 ask. 키는 공통 OpenRouter 키 파일의
-`OPENROUTER_API_KEY=` 한 줄이며, 키 없음·3.5초 타임아웃·네트워크·응답 형식 오류는 allow(fail-open)하고 기록에 `error`를 남긴다.
-기록은 `state/tool-gate/<스레드>.jsonl`(ts·command 앞 300자·decision·verdict·confidence·ms·mode·source·error·qv).
-`qv`는 질문·규칙 버전(`QUESTION_VERSION`)이라 바꾸기 전후 기록을 가른다. `source`: rule·jev·fail-open.
-`routes.json` `toolGate.mode`: `shadow`(기본 — 판정·기록만 하고 훅은 즉시 반환, 분리 자식이 처리), `enforce`, `off`.
-2026-10-08 소유자 지시로 enforce 기본과 ✅ 승인 흐름을 없앴다(ask 남발로 작업이 멈춤). 다시 켜려면 섀도 기록으로 부당 ask를 먼저 줄인다.
-섀도 누적 집계는 `state/tool-gate/summary.json`이며, Jev 판정 수·마크 작업 수가 `toolGate.reviewAt`(기본 50건·10개)에
-처음 닿으면 운영 로그 채널에 소유자 멘션으로 검토 알림(판정 분포·확신도 미달·fail-open 수)을 한 번 올린다. 다시 받으려면 `summary.json`을 지운다.
-`summary.json`에 `"reviewChannel": "<스레드·채널 ID>"`를 넣으면 그쪽으로 보낸다(보관된 스레드도 글을 올리면 다시 열린다). 실패하면 운영 로그 채널.
-`toolGate.notify: true`면 섀도에서 ask/deny 판정을 스레드에 한 줄 알린다(기본 off).
-**재측정**: 규칙·질문을 바꾼 뒤에는 `summary.json`을 보관(`summary-<날짜>.json`)하고 새로 집계한다(`qv`로 새 기록만 본다).
-재알림 후 부당 ask 비율이 10% 아래면 enforce.
-**enforce 전환**: 섀도 기록에서 오판(`source=jev`인데 부당한 ask/deny)을 먼저 확인한 뒤 `toolGate.mode`를 `"enforce"`로 바꾼다.
-훅이 매번 설정을 읽으므로 재시작은 필요 없다. enforce는 동기 판정이며 deny·ask 모두 차단만 한다(승인 요청 없음).
-(Claude의 `ask` 결정은 터미널 확인을 띄워 마크가 멈추므로 쓰지 않는다).
 
 ## 자동 실행 등록
 

@@ -39,7 +39,23 @@ class ClassifyRequestTests(unittest.TestCase):
         self.assertEqual(cfg["levels"]["simple"], {"model": "sonnet", "effort": "medium"})
         r = cr.decide(cfg, classify=lambda: ("hard", 0.97))
         self.assertEqual((r["model"], r["effort"]), ("opus", "max"))
-        self.assertEqual(cr.decide(cfg, classify=lambda: ("hard", 0.9))["source"], "default")
+        self.assertEqual(cr.decide(cfg, classify=lambda: ("simple", 0.9))["source"], "default")
+        # hard 는 levelThresholds(기본 0.5) 가 threshold 보다 우선
+        self.assertEqual(cr.decide(cfg, classify=lambda: ("hard", 0.6))["source"], "jev")
+        self.assertEqual(cr.decide(cfg, classify=lambda: ("hard", 0.4))["reason"], "low_confidence")
+        cfg = cr.settings({"jevRouting": {"levelThresholds": {"hard": 0.9, "simple": "x"}}})
+        self.assertEqual(cfg["levelThresholds"], {"hard": 0.9})
+        self.assertEqual(cr.decide(cfg, classify=lambda: ("hard", 0.8))["source"], "default")
+
+    def test_title_sent_only_when_not_in_request(self):
+        def sent(opener):
+            return json.loads(opener.call_args[0][0].data)["state"]
+        opener = reply("hard", 0.9)
+        cr.call_jev(self.cfg, "k", "demo", "위 스레드 읽고 진행해", opener=opener, title="자비스 검수 실패 원인 수정")
+        self.assertEqual(sent(opener)["title"], "자비스 검수 실패 원인 수정")
+        opener = reply("hard", 0.9)
+        cr.call_jev(self.cfg, "k", "demo", "자비스 검수 실패 원인 수정", opener=opener, title="자비스 검수 실패 원인 수정")
+        self.assertNotIn("title", sent(opener))
 
     def test_user_explicit_wins_without_calling_jev(self):
         classify = Mock(return_value=("simple", 0.99))
@@ -56,8 +72,8 @@ class ClassifyRequestTests(unittest.TestCase):
         classify.assert_not_called()
 
     def test_low_confidence_falls_back_to_default(self):
-        r = cr.decide(self.cfg, classify=self.classify(reply("hard", 0.84)))
-        self.assertEqual((r["model"], r["effort"], r["source"], r["level"], r["reason"]), ("", "", "default", "hard", "low_confidence"))
+        r = cr.decide(self.cfg, classify=self.classify(reply("simple", 0.84)))
+        self.assertEqual((r["model"], r["effort"], r["source"], r["level"], r["reason"]), ("", "", "default", "simple", "low_confidence"))
 
     def test_fail_open(self):
         failures = {

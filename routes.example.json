@@ -44,27 +44,19 @@
     }
   },
   "openrouterKeyFile": "",
-  "_openrouterKeyFileComment": "OpenRouter 키를 담은 env 파일 경로 (예: 다른 에이전트의 .env). 비우면 $BOTS_DIR/openrouter.env. Jev 라우팅·툴 게이트 공통",
+  "_openrouterKeyFileComment": "OpenRouter 키를 담은 env 파일 경로 (예: 다른 에이전트의 .env). 비우면 $BOTS_DIR/openrouter.env. Jev 라우팅이 쓴다",
   "jevRouting": {
     "_comment": "접수 난이도 라우팅. 키는 openrouterKeyFile. 빈 levels 항목 = models.작업자 기본값",
     "enabled": true,
     "model": "typesafe/jev-1.13-20260917",
     "threshold": 0.85,
+    "levelThresholds": {"hard": 0.5},
     "timeoutSec": 3,
     "levels": {
       "simple": {"model": "sonnet", "effort": "medium"},
       "standard": {},
       "hard": {"model": "fable", "effort": "high"}
     }
-  },
-  "toolGate": {
-    "mode": "shadow",
-    "model": "typesafe/jev-1.13-20260917",
-    "threshold": 0.85,
-    "allowThreshold": 0.75,
-    "notify": false,
-    "reviewAt": {"jev": 50, "threads": 10},
-    "_comment": "마크 Bash 게이트. shadow=기록만 / enforce=deny·ask 차단. allow 확신도 기준 allowThreshold, deny 는 threshold / off. 키: openrouterKeyFile. docs/ADMIN.md 툴 게이트 참고"
   },
   "stateRoot": "~/.claude/channels",
   "channelsFlag": "plugin:discord-orca@orca-local",

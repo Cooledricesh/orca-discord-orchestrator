@@ -78,7 +78,7 @@ mkey=작업자; [[ "$engine" == claude ]] || mkey="${engine}작업자"
 if (( resume )); then
   route_level="$(registry_get "$thread" routeLevel)"; route_conf="$(registry_get "$thread" routeConfidence)"; route_source="$(registry_get "$thread" routeSource)"
 elif [[ -z "$route_source" ]]; then
-  cls="$(python3 "$ORCH_ROOT/bin/classify-request.py" "${request_file:-/dev/null}" --project "$project" --engine "$engine" --model "$sel_model" --effort "$sel_effort" 2>/dev/null || true)"
+  cls="$(python3 "$ORCH_ROOT/bin/classify-request.py" "${request_file:-/dev/null}" --project "$project" --title "${title:#task-$thread}" --engine "$engine" --model "$sel_model" --effort "$sel_effort" 2>/dev/null || true)"
   typeset -A rt; for kv in ${(z)cls}; do rt[${kv%%=*}]="${kv#*=}"; done
   route_level="${rt[level]:-}"; route_conf="${rt[confidence]:-}"; route_source="${rt[source]:-default}"
   (( dry )) && log "난이도 분류: ${cls:-(출력 없음)}"
